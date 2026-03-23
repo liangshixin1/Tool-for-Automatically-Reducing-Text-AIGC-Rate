@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>自动文本 AI 降率工具</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"PingFang SC"', '"Noto Sans SC"', '"Microsoft YaHei"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
+          },
+        },
+      },
+    }
+  </script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    /* ── base ── */
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { background: #0d0e11; color: #e2e4eb; font-family: "PingFang SC","Noto Sans SC","Microsoft YaHei",system-ui,sans-serif; }
+
+    /* ── scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #3a3b42; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #52535e; }
+
+    /* ── panel backgrounds ── */
+    .para-zh  { background: #141c2e; border-left: 3px solid #2563eb; }
+    .para-en  { background: #121e16; border-left: 3px solid #16a34a; }
+    .para-hd  { background: #1e1e26; border-left: 3px solid #7c3aed; }
+
+    /* ── diff highlight ── */
+    mark.diff-add {
+      background: rgba(234,179,8,0.22);
+      color: #fef08a;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
+
+    /* ── cursor blink ── */
+    .cursor-blink::after {
+      content: '▍';
+      font-size: 0.85em;
+      animation: blink 0.9s step-end infinite;
+      color: #60a5fa;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* ── thinking dots ── */
+    .dot-flashing { display:inline-flex; gap:5px; align-items:center; }
+    .dot-flashing span {
+      width:7px; height:7px; border-radius:50%;
+      background:#60a5fa;
+      animation: dotbounce 1.2s ease-in-out infinite;
+    }
+    .dot-flashing span:nth-child(2){ animation-delay:.2s }
+    .dot-flashing span:nth-child(3){ animation-delay:.4s }
+    @keyframes dotbounce{ 0%,80%,100%{transform:scale(0.6);opacity:.4} 40%{transform:scale(1);opacity:1} }
+
+    /* ── progress bar ── */
+    .progress-bar { transition: width 0.4s ease; }
+
+    /* ── history badge ── */
+    .badge-approved  { background:#166534; color:#86efac; }
+    .badge-edited    { background:#92400e; color:#fcd34d; }
+    .badge-skipped   { background:#374151; color:#9ca3af; }
+    .badge-regen     { background:#1e3a5f; color:#93c5fd; }
+
+    /* ── modal overlay ── */
+    .modal-overlay {
+      position:fixed; inset:0;
+      background:rgba(0,0,0,.7);
+      backdrop-filter:blur(4px);
+      z-index:50;
+      display:flex; align-items:center; justify-content:center;
+    }
+
+    /* ── line height for CJK ── */
+    .text-content { line-height: 1.9; font-size: 0.875rem; }
+
+    /* ── upload zone ── */
+    .upload-zone {
+      border: 2px dashed #3a3b42;
+      transition: border-color .2s, background .2s;
+    }
+    .upload-zone.drag-over {
+      border-color: #3b82f6;
+      background: #0f1829;
+    }
+  </style>
+</head>
+<body>
+<div id="app" style="height:100vh;display:flex;flex-direction:column;overflow:hidden;">
+
+  <!-- ═══════════════════  UPLOAD SCREEN  ═══════════════════ -->
+  <div v-if="phase==='upload'"
+       class="flex flex-col items-center justify-center flex-1 px-4">
+
+    <div class="w-full max-w-md space-y-8">
+      <!-- Title -->
+      <div class="text-center space-y-2">
+        <div class="text-xs tracking-widest text-zinc-500 uppercase mb-1">AIGC Trace Eliminator</div>
+        <h1 class="text-2xl font-semibold text-zinc-100">自动文本 AI 降率工具</h1>
+        <p class="text-sm text-zinc-500">上传教材 .docx，逐段审批 DeepSeek 润色结果，导出对照 Word 文档</p>
+      </div>
+
+      <!-- API key -->
+      <div class="space-y-1">
+        <label class="text-xs text-zinc-400 uppercase tracking-wide">DeepSeek API 密钥</label>
+        <div class="flex gap-2">
+          <input
+            v-model="apiKey"
+            @input="saveApiKey"
+            type="password"
+            placeholder="sk-..."
+            class="flex-1 bg-zinc-900 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-200
+                   placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+          />
+          <button @click="toggleKeyVisible"
+                  class="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-md text-xs text-zinc-400 transition-colors">
+            {{ showKey ? '隐藏' : '显示' }}
+          </button>
+        </div>
+        <p v-if="!apiKey" class="text-xs text-amber-500/80">请先填写 API 密钥才能开始审校</p>
+      </div>
+
+      <!-- Drop zone -->
+      <div
+        class="upload-zone rounded-xl p-10 text-center cursor-pointer"
+        :class="{'drag-over': dragOver}"
+        @dragover.prevent="dragOver=true"
+        @dragleave.prevent="dragOver=false"
+        @drop.prevent="onDrop"
+        @click="$refs.fileInput.click()"
+      >
+        <input ref="fileInput" type="file" accept=".docx" class="hidden" @change="onFileChange" />
+        <div v-if="!uploading">
+          <div class="text-4xl mb-3">📄</div>
+          <p class="text-zinc-300 font-medium">拖拽 .docx 文件至此，或点击选择</p>
+          <p class="text-xs text-zinc-600 mt-1">仅支持 Word 2007+ (.docx) 格式，最大 50 MB</p>
+        </div>
+        <div v-else class="flex flex-col items-center gap-3">
+          <div class="dot-flashing"><span></span><span></span><span></span></div>
+          <p class="text-sm text-zinc-400">正在解析文档…</p>
+        </div>
+      </div>
+
+      <!-- Error -->
+      <div v-if="uploadError"
+           class="bg-red-950/60 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
+        {{ uploadError }}
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════  REVIEW SCREEN  ═══════════════════ -->
+  <template v-else-if="phase==='review'">
+
+    <!-- ── Nav bar ── -->
+    <nav class="flex-none flex items-center gap-3 px-4 h-12 bg-[#0d0e11] border-b border-zinc-800/60">
+      <span class="font-semibold text-zinc-200 text-sm whitespace-nowrap">自动文本 AI 降率工具</span>
+
+      <!-- progress -->
+      <div class="flex items-center gap-2 flex-1 min-w-0">
+        <div class="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+          <div class="progress-bar h-full bg-blue-500 rounded-full"
+               :style="{width: progressPct+'%'}"></div>
+        </div>
+        <span class="text-xs text-zinc-400 whitespace-nowrap">{{ currentIdx+1 }} / {{ groups.length }}</span>
+      </div>
+
+      <!-- API key compact -->
+      <div class="flex items-center gap-1.5 flex-none">
+        <span class="text-xs text-zinc-600">API</span>
+        <input
+          v-model="apiKey"
+          @input="saveApiKey"
+          :type="showKey ? 'text' : 'password'"
+          placeholder="sk-..."
+          class="w-44 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"
+        />
+        <div class="w-2 h-2 rounded-full" :class="apiKey ? 'bg-emerald-500' : 'bg-red-500'"></div>
+      </div>
+    </nav>
+
+    <!-- ── Main 3-column ── -->
+    <div class="flex flex-1 overflow-hidden">
+
+      <!-- LEFT: original text (30%) -->
+      <div class="flex flex-col border-r border-zinc-800/60"
+           style="width:30%;min-width:200px;">
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/60 flex items-center gap-2">
+          <span class="text-xs font-medium text-zinc-400 uppercase tracking-wide">原文</span>
+          <span class="text-xs text-zinc-600 truncate">{{ currentGroup.heading }}</span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3 space-y-2 text-content">
+          <div
+            v-for="(para, pi) in currentGroup.paragraphs"
+            :key="pi"
+            class="rounded-md px-3 py-2"
+            :class="{
+              'para-hd': para.lang==='heading',
+              'para-zh': para.lang==='zh',
+              'para-en': para.lang==='en',
+            }"
+          >
+            <span class="text-[10px] font-mono mr-1.5 opacity-40"
+                  :class="{
+                    'text-violet-400': para.lang==='heading',
+                    'text-blue-400':   para.lang==='zh',
+                    'text-green-400':  para.lang==='en',
+                  }">
+              {{ para.lang==='heading' ? 'H' : para.lang==='zh' ? 'ZH' : 'EN' }}
+            </span>
+            {{ para.text }}
+          </div>
+        </div>
+      </div>
+
+      <!-- MIDDLE: AI review (40%) -->
+      <div class="flex flex-col border-r border-zinc-800/60" style="width:40%;">
+
+        <!-- Status bar -->
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/60 flex items-center gap-2 min-h-[38px]">
+          <template v-if="reviewPhase==='streaming'">
+            <div class="dot-flashing"><span></span><span></span><span></span></div>
+            <span class="text-xs text-blue-400">AI 思考中…</span>
+            <span v-if="retryCount>0"
+                  class="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-blue-900/50 text-blue-300">
+              第 {{ retryCount }} 次生成
+            </span>
+          </template>
+          <template v-else-if="reviewPhase==='done'">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 flex-none"></span>
+            <span class="text-xs text-emerald-400">生成完毕</span>
+            <span v-if="retryCount>0"
+                  class="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-blue-900/50 text-blue-300">
+              第 {{ retryCount }} 次生成
+            </span>
+          </template>
+          <template v-else-if="reviewPhase==='editing'">
+            <span class="w-2 h-2 rounded-full bg-amber-500 flex-none"></span>
+            <span class="text-xs text-amber-400">手动编辑中</span>
+            <span class="text-xs text-zinc-600 ml-2">Ctrl+Enter 保存 · Esc 取消</span>
+          </template>
+          <template v-else>
+            <span class="text-xs text-zinc-600">等待生成…</span>
+          </template>
+        </div>
+
+        <!-- Content -->
+        <div class="flex-1 overflow-y-auto p-3">
+          <!-- Edit mode: textarea -->
+          <textarea
+            v-if="reviewPhase==='editing'"
+            v-model="editText"
+            @keydown.ctrl.enter.prevent="confirmEdit"
+            @keydown.esc.prevent="cancelEdit"
+            class="w-full h-full min-h-[200px] bg-zinc-900 border border-amber-600/50 rounded-md
+                   p-3 text-sm text-zinc-200 resize-none focus:outline-none focus:border-amber-500
+                   text-content"
+            style="height:calc(100% - 4px)"
+          ></textarea>
+
+          <!-- Normal / streaming / done -->
+          <div v-else
+               class="text-content text-zinc-200 whitespace-pre-wrap"
+               :class="{'cursor-blink': reviewPhase==='streaming'}"
+               v-html="displayHtml">
+          </div>
+        </div>
+
+        <!-- ── Action buttons (fixed bottom) ── -->
+        <div class="flex-none border-t border-zinc-800/60 p-2.5 grid grid-cols-4 gap-2">
+          <button
+            @click="approve"
+            :disabled="reviewPhase!=='done'"
+            class="flex flex-col items-center justify-center py-2.5 rounded-md text-xs font-medium
+                   transition-all gap-1 disabled:opacity-30 disabled:cursor-not-allowed
+                   bg-emerald-800/60 hover:bg-emerald-700/80 border border-emerald-700/50 text-emerald-300"
+          >
+            <span class="text-base">✅</span>
+            <span>批准采用</span>
+            <span class="text-[10px] opacity-50">Enter</span>
+          </button>
+
+          <button
+            @click="regenerate"
+            :disabled="reviewPhase==='streaming'"
+            class="flex flex-col items-center justify-center py-2.5 rounded-md text-xs font-medium
+                   transition-all gap-1 disabled:opacity-30 disabled:cursor-not-allowed
+                   bg-blue-900/60 hover:bg-blue-800/80 border border-blue-700/50 text-blue-300"
+          >
+            <span class="text-base">🔄</span>
+            <span>重新生成</span>
+            <span class="text-[10px] opacity-50">R</span>
+          </button>
+
+          <button
+            @click="enterEdit"
+            :disabled="reviewPhase==='streaming'"
+            class="flex flex-col items-center justify-center py-2.5 rounded-md text-xs font-medium
+                   transition-all gap-1 disabled:opacity-30 disabled:cursor-not-allowed
+                   bg-amber-900/60 hover:bg-amber-800/80 border border-amber-700/50 text-amber-300"
+          >
+            <span class="text-base">✏️</span>
+            <span>手动编辑</span>
+            <span class="text-[10px] opacity-50">E</span>
+          </button>
+
+          <button
+            @click="skip"
+            :disabled="reviewPhase==='streaming'"
+            class="flex flex-col items-center justify-center py-2.5 rounded-md text-xs font-medium
+                   transition-all gap-1 disabled:opacity-30 disabled:cursor-not-allowed
+                   bg-zinc-800/60 hover:bg-zinc-700/80 border border-zinc-700/50 text-zinc-400"
+          >
+            <span class="text-base">⏭️</span>
+            <span>保留原文</span>
+            <span class="text-[10px] opacity-50">S</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- RIGHT: history (30%) -->
+      <div class="flex flex-col" style="width:30%;">
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/60">
+          <span class="text-xs font-medium text-zinc-400 uppercase tracking-wide">操作历史</span>
+          <span class="ml-2 text-xs text-zinc-600">{{ history.length }} 条</span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-2 space-y-1">
+          <div
+            v-for="(h, hi) in historyReversed"
+            :key="h.id"
+            @click="viewHistory(h)"
+            class="rounded-md px-3 py-2 cursor-pointer border border-transparent
+                   hover:border-zinc-700 hover:bg-zinc-900/50 transition-colors"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] font-mono text-zinc-600 flex-none">#{{ h.id }}</span>
+              <span class="text-xs text-zinc-300 truncate flex-1">{{ h.heading }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full flex-none"
+                    :class="badgeClass(h.decision)">
+                {{ decisionLabel(h) }}
+              </span>
+            </div>
+          </div>
+          <div v-if="history.length===0" class="text-xs text-zinc-700 text-center pt-8">
+            处理完段落后将在此显示记录
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ═══════════════════  COMPLETE SCREEN  ═══════════════════ -->
+  <div v-else-if="phase==='complete'"
+       class="flex flex-col items-center justify-center flex-1 px-4">
+    <div class="w-full max-w-sm space-y-6 text-center">
+      <div class="text-5xl">🎉</div>
+      <h2 class="text-xl font-semibold text-zinc-100">全部段落处理完毕</h2>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-emerald-400">{{ stats.approved }}</div>
+          <div class="text-xs text-zinc-500 mt-1">批准采用</div>
+        </div>
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-amber-400">{{ stats.edited }}</div>
+          <div class="text-xs text-zinc-500 mt-1">手动编辑</div>
+        </div>
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-blue-400">{{ stats.regen }}</div>
+          <div class="text-xs text-zinc-500 mt-1">重新生成</div>
+        </div>
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-zinc-400">{{ stats.skipped }}</div>
+          <div class="text-xs text-zinc-500 mt-1">保留原文</div>
+        </div>
+      </div>
+      <button
+        @click="exportDoc"
+        :disabled="exporting"
+        class="w-full py-3 rounded-lg font-medium text-sm transition-all
+               bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/50 text-white"
+      >
+        {{ exporting ? '生成中…' : '📥 导出 Word 文档' }}
+      </button>
+      <div v-if="exportError" class="text-sm text-red-400">{{ exportError }}</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════  EXPORT OVERLAY  ═══════════════════ -->
+  <div v-if="exporting" class="modal-overlay">
+    <div class="text-center space-y-4">
+      <div class="dot-flashing justify-center"><span></span><span></span><span></span></div>
+      <p class="text-zinc-300 text-sm">正在生成 Word 文档，请稍候…</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════  HISTORY MODAL  ═══════════════════ -->
+  <div v-if="historyModal" class="modal-overlay" @click.self="historyModal=null">
+    <div class="bg-zinc-900 border border-zinc-700 rounded-xl w-full max-w-3xl max-h-[80vh]
+                overflow-hidden flex flex-col mx-4">
+      <div class="flex items-center gap-3 px-5 py-3 border-b border-zinc-800">
+        <span class="text-xs font-mono text-zinc-500">#{{ historyModal.id }}</span>
+        <span class="text-sm font-medium text-zinc-200 flex-1 truncate">{{ historyModal.heading }}</span>
+        <span class="text-[10px] px-2 py-0.5 rounded-full" :class="badgeClass(historyModal.decision)">
+          {{ decisionLabel(historyModal) }}
+        </span>
+        <button @click="historyModal=null"
+                class="text-zinc-500 hover:text-zinc-300 transition-colors text-lg leading-none ml-2">✕</button>
+      </div>
+      <div class="flex flex-1 overflow-hidden">
+        <div class="flex-1 overflow-y-auto p-4 border-r border-zinc-800 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-zinc-600 mb-1">原文</div>
+          <div v-for="(pd,pi) in historyModal.original" :key="pi"
+               class="text-content text-xs text-zinc-300 rounded-md px-3 py-2"
+               :class="{
+                 'para-hd': pd.lang==='heading',
+                 'para-zh': pd.lang==='zh',
+                 'para-en': pd.lang==='en',
+               }">{{ pd.text }}</div>
+        </div>
+        <div class="flex-1 overflow-y-auto p-4 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-zinc-600 mb-1">修改后</div>
+          <div class="text-content text-xs text-teal-300 whitespace-pre-wrap">{{ historyModal.modified || '（保留原文）' }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════  ERROR TOAST  ═══════════════════ -->
+  <transition name="toast">
+    <div v-if="toastMsg"
+         class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50
+                bg-red-950 border border-red-700 text-red-300
+                px-4 py-2.5 rounded-lg text-sm shadow-xl max-w-sm text-center">
+      {{ toastMsg }}
+    </div>
+  </transition>
+
+</div>
+
+<script>
+// ─── diff utility ───────────────────────────────────────────────────────────
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Token-level LCS diff; returns HTML with <mark class="diff-add"> on new tokens.
+function tokenDiff(orig, mod) {
+  if (!orig || !mod) return escHtml(mod || '').replace(/\n/g,'<br>');
+
+  // Tokenise: individual CJK chars, ASCII words, newlines, other chars
+  const tok = s => s.match(/[\u4e00-\u9fff\u3400-\u4dbf]|[a-zA-Z0-9]+|\n|[\s\S]/g) || [];
+
+  const A = tok(orig), B = tok(mod);
+  const m = A.length, n = B.length;
+
+  // Cap to avoid O(mn) blow-up
+  if (m > 800 || n > 800) {
+    return escHtml(mod).replace(/\n/g,'<br>');
+  }
+
+  // DP
+  const dp = Array.from({length: m+1}, () => new Int32Array(n+1));
+  for (let i=1;i<=m;i++) for (let j=1;j<=n;j++) {
+    dp[i][j] = A[i-1]===B[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j],dp[i][j-1]);
+  }
+
+  // Backtrack – collect ops on B tokens only (we show modified text)
+  const ops = [];
+  let i=m, j=n;
+  while (i>0||j>0) {
+    if (i>0&&j>0&&A[i-1]===B[j-1])   { ops.unshift({t:'s',v:B[j-1]}); i--;j--; }
+    else if (j>0&&(i===0||dp[i][j-1]>=dp[i-1][j])) { ops.unshift({t:'a',v:B[j-1]}); j--; }
+    else                               { i--; }  // removed from A – skip in output
+  }
+
+  // Render
+  let html='', buf='', inAdd=false;
+  const flush = () => {
+    if (!buf) return;
+    html += inAdd ? `<mark class="diff-add">${escHtml(buf)}</mark>` : escHtml(buf);
+    buf='';
+  };
+  for (const op of ops) {
+    const isAdd = op.t==='a';
+    if (isAdd!==inAdd) { flush(); inAdd=isAdd; }
+    if (op.v==='\n') { flush(); html+='<br>'; }
+    else buf+=op.v;
+  }
+  flush();
+  return html;
+}
+
+// ─── Vue app ─────────────────────────────────────────────────────────────────
+const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
+
+createApp({
+  setup() {
+    // ── state ──
+    const phase       = ref('upload');       // 'upload' | 'review' | 'complete'
+    const apiKey      = ref('');
+    const showKey     = ref(false);
+    const dragOver    = ref(false);
+    const uploading   = ref(false);
+    const uploadError = ref('');
+    const groups      = ref([]);
+    const currentIdx  = ref(0);
+    const reviewPhase = ref('idle');         // 'idle' | 'streaming' | 'done' | 'editing'
+    const streamedText = ref('');
+    const finalText   = ref('');
+    const editText    = ref('');
+    const temperature = ref(0.3);
+    const retryCount  = ref(0);
+    const results     = ref([]);
+    const history     = ref([]);
+    const exporting   = ref(false);
+    const exportError = ref('');
+    const historyModal= ref(null);
+    const toastMsg    = ref('');
+    let   toastTimer  = null;
+
+    // ── computed ──
+    const currentGroup = computed(() => groups.value[currentIdx.value] || null);
+    const progressPct  = computed(() =>
+      groups.value.length ? (currentIdx.value / groups.value.length) * 100 : 0
+    );
+    const historyReversed = computed(() => [...history.value].reverse());
+
+    const displayHtml = computed(() => {
+      if (reviewPhase.value === 'streaming') {
+        return escHtml(streamedText.value).replace(/\n/g,'<br>');
+      }
+      if (reviewPhase.value === 'done' && currentGroup.value) {
+        return tokenDiff(currentGroup.value.combined_text, finalText.value);
+      }
+      return '';
+    });
+
+    const stats = computed(() => {
+      const r = results.value;
+      return {
+        approved: r.filter(x=>x.decision==='approved').length,
+        edited:   r.filter(x=>x.decision==='edited').length,
+        skipped:  r.filter(x=>x.decision==='skipped').length,
+        regen:    history.value.filter(x=>x.retryCount>0).length,
+      };
+    });
+
+    // ── helpers ──
+    function showToast(msg, ms=4000) {
+      toastMsg.value = msg;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastMsg.value='', ms);
+    }
+
+    function saveApiKey() {
+      localStorage.setItem('ds_api_key', apiKey.value);
+    }
+
+    function toggleKeyVisible() { showKey.value = !showKey.value; }
+
+    function badgeClass(d) {
+      return {
+        approved: 'badge-approved',
+        edited:   'badge-edited',
+        skipped:  'badge-skipped',
+        regen:    'badge-regen',
+      }[d] || 'badge-skipped';
+    }
+
+    function decisionLabel(h) {
+      if (h.decision==='approved') return '✅ 批准';
+      if (h.decision==='edited')   return '✏️ 编辑';
+      if (h.decision==='skipped')  return '⏭️ 跳过';
+      return '🔄 生成';
+    }
+
+    function viewHistory(h) { historyModal.value = h; }
+
+    // ── upload ──
+    function onDrop(e) {
+      dragOver.value = false;
+      const f = e.dataTransfer?.files?.[0];
+      if (f) doUpload(f);
+    }
+    function onFileChange(e) {
+      const f = e.target.files?.[0];
+      if (f) doUpload(f);
+    }
+    async function doUpload(file) {
+      if (!file.name.endsWith('.docx')) {
+        uploadError.value = '请选择 .docx 格式文件';
+        return;
+      }
+      uploadError.value = '';
+      uploading.value = true;
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        groups.value = data.groups;
+        currentIdx.value = 0;
+        results.value = [];
+        history.value = [];
+        phase.value = 'review';
+        await nextTick();
+        startReview();
+      } catch (err) {
+        uploadError.value = err.message;
+      } finally {
+        uploading.value = false;
+      }
+    }
+
+    // ── review ──
+    async function startReview() {
+      if (!currentGroup.value) return;
+      if (!apiKey.value) {
+        showToast('请先填写 DeepSeek API 密钥');
+        reviewPhase.value = 'idle';
+        return;
+      }
+      streamedText.value = '';
+      finalText.value = '';
+      reviewPhase.value = 'streaming';
+
+      try {
+        const res = await fetch('/review', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': apiKey.value,
+          },
+          body: JSON.stringify({
+            text: currentGroup.value.combined_text,
+            temperature: temperature.value,
+          }),
+        });
+
+        if (!res.ok) {
+          const d = await res.json();
+          throw new Error(d.error || `HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const payload = line.slice(6).trim();
+            if (payload === '[DONE]') { buf = ''; break; }
+            try {
+              const chunk = JSON.parse(payload);
+              if (chunk.error) throw new Error(chunk.error);
+              if (chunk.content) streamedText.value += chunk.content;
+            } catch (pe) {
+              if (pe.message && !pe.message.startsWith('JSON')) throw pe;
+            }
+          }
+        }
+
+        finalText.value = streamedText.value;
+        reviewPhase.value = 'done';
+      } catch (err) {
+        reviewPhase.value = 'idle';
+        showToast('AI 审校失败：' + err.message);
+      }
+    }
+
+    function regenerate() {
+      if (reviewPhase.value === 'streaming') return;
+      retryCount.value += 1;
+      temperature.value = Math.min(0.3 + retryCount.value * 0.15, 0.9);
+      reviewPhase.value = 'idle';
+      startReview();
+    }
+
+    function approve() {
+      if (reviewPhase.value !== 'done') return;
+      commitResult('approved', finalText.value);
+    }
+
+    function enterEdit() {
+      if (reviewPhase.value === 'streaming') return;
+      editText.value = finalText.value || currentGroup.value.combined_text;
+      reviewPhase.value = 'editing';
+    }
+
+    function confirmEdit() {
+      finalText.value = editText.value;
+      reviewPhase.value = 'done';
+      commitResult('edited', editText.value);
+    }
+
+    function cancelEdit() {
+      reviewPhase.value = finalText.value ? 'done' : 'idle';
+    }
+
+    function skip() {
+      if (reviewPhase.value === 'streaming') return;
+      commitResult('skipped', '');
+    }
+
+    function commitResult(decision, modified) {
+      const g = currentGroup.value;
+      results.value.push({
+        id: g.id,
+        original: g.paragraphs,
+        modified,
+        decision,
+      });
+      history.value.push({
+        id: g.id,
+        heading: g.heading,
+        decision,
+        retryCount: retryCount.value,
+        original: g.paragraphs,
+        modified,
+      });
+
+      // advance
+      const next = currentIdx.value + 1;
+      if (next >= groups.value.length) {
+        phase.value = 'complete';
+      } else {
+        currentIdx.value = next;
+        temperature.value = 0.3;
+        retryCount.value = 0;
+        reviewPhase.value = 'idle';
+        streamedText.value = '';
+        finalText.value = '';
+        nextTick(() => startReview());
+      }
+    }
+
+    // ── export ──
+    async function exportDoc() {
+      exporting.value = true;
+      exportError.value = '';
+      try {
+        const res = await fetch('/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ results: results.value }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          throw new Error(d.error || `HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'revised.docx';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        exportError.value = '导出失败：' + err.message;
+      } finally {
+        exporting.value = false;
+      }
+    }
+
+    // ── keyboard shortcuts ──
+    function onKeyDown(e) {
+      if (phase.value !== 'review') return;
+      // Don't fire if user is typing in an input/textarea
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+
+      if (reviewPhase.value === 'editing') {
+        if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+        return;
+      }
+
+      switch (e.key) {
+        case 'Enter': e.preventDefault(); if (reviewPhase.value==='done') approve(); break;
+        case 'r': case 'R': e.preventDefault(); regenerate(); break;
+        case 'e': case 'E': e.preventDefault(); enterEdit(); break;
+        case 's': case 'S': e.preventDefault(); skip(); break;
+      }
+    }
+
+    // ── lifecycle ──
+    onMounted(() => {
+      apiKey.value = localStorage.getItem('ds_api_key') || '';
+      document.addEventListener('keydown', onKeyDown);
+    });
+    onUnmounted(() => {
+      document.removeEventListener('keydown', onKeyDown);
+    });
+
+    return {
+      phase, apiKey, showKey, dragOver, uploading, uploadError,
+      groups, currentIdx, currentGroup, progressPct,
+      reviewPhase, streamedText, finalText, editText,
+      temperature, retryCount,
+      results, history, historyReversed,
+      exporting, exportError,
+      historyModal,
+      toastMsg,
+      displayHtml, stats,
+      saveApiKey, toggleKeyVisible,
+      badgeClass, decisionLabel, viewHistory,
+      onDrop, onFileChange,
+      approve, regenerate, enterEdit, confirmEdit, cancelEdit, skip,
+      exportDoc,
+    };
+  }
+}).mount('#app');
+</script>
+
+<style>
+.toast-enter-active, .toast-leave-active { transition: all .25s ease; }
+.toast-enter-from, .toast-leave-to { opacity:0; transform:translate(-50%,12px); }
+</style>
+</body>
+</html>
