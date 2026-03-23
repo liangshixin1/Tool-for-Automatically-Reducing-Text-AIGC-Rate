@@ -73,6 +73,32 @@
 
   <!-- ══════════════  UPLOAD  ══════════════ -->
   <div v-if="phase==='upload'" class="flex flex-col items-center justify-center flex-1 px-4">
+
+    <!-- session restore banner -->
+    <div v-if="hasRestoreDialog"
+         class="w-full max-w-md mb-6 bg-blue-950/60 border border-blue-700/50 rounded-xl p-4">
+      <div class="flex items-start gap-3">
+        <span class="text-xl flex-none">🕐</span>
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium text-blue-200">发现上次保存的进度</div>
+          <div class="text-xs text-blue-400/80 mt-0.5">
+            已处理 {{ savedSession.results.length }} / {{ savedSession.groups.length }} 组
+            · 保存于 {{ savedSession.savedAtFmt }}
+          </div>
+        </div>
+        <div class="flex gap-2 flex-none">
+          <button @click="restoreSession"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors">
+            继续上次
+          </button>
+          <button @click="dismissRestore"
+                  class="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors">
+            重新开始
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="w-full max-w-md space-y-7">
 
       <div class="text-center">
@@ -140,12 +166,16 @@
       </div>
 
       <!-- pause button -->
-      <button @click="pauseExport"
+      <button @click="pauseReview"
               class="flex-none flex items-center gap-1.5 px-2.5 py-1 rounded border
                      border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500
                      transition-colors bg-zinc-900/50">
-        ⏸ 暂停并导出
+        ⏸ 暂停
       </button>
+      <!-- auto-save timestamp -->
+      <span v-if="sessionSavedAt" class="text-[10px] text-zinc-700 flex-none whitespace-nowrap">
+        ✓ {{ sessionSavedAt }}
+      </span>
 
       <!-- compact API keys -->
       <div class="flex items-center gap-1.5 flex-none">
@@ -404,6 +434,43 @@
     </div>
   </div>
 
+  <!-- ══════════════  PAUSED  ══════════════ -->
+  <div v-else-if="phase==='paused'" class="flex flex-col items-center justify-center flex-1 px-4">
+    <div class="w-full max-w-sm space-y-5 text-center">
+      <div class="text-5xl">⏸</div>
+      <h2 class="text-xl font-semibold text-zinc-100">已暂停</h2>
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-sm text-zinc-400 space-y-1">
+        <div>已完成 <span class="text-zinc-200 font-medium">{{ results.length }}</span> 组
+             / 共 <span class="text-zinc-200 font-medium">{{ groups.length }}</span> 组</div>
+        <div v-if="sessionSavedAt" class="text-xs text-zinc-600">进度已自动保存 · {{ sessionSavedAt }}</div>
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <button @click="exportPartial" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium
+                       bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300
+                       disabled:opacity-40 transition-colors">
+          <span class="text-lg">📥</span>
+          <span>{{ exporting?'生成中…':'导出当前进度' }}</span>
+        </button>
+        <button @click="resumeReview"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium
+                       bg-blue-800/60 hover:bg-blue-700/60 border border-blue-700/50 text-blue-300
+                       transition-colors">
+          <span class="text-lg">▶</span>
+          <span>继续审校</span>
+        </button>
+        <button @click="startFresh"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium
+                       bg-zinc-900 hover:bg-zinc-800 border border-zinc-700/50 text-zinc-500
+                       transition-colors">
+          <span class="text-lg">🔄</span>
+          <span>重新开始</span>
+        </button>
+      </div>
+      <div v-if="exportErr" class="text-sm text-red-400">{{ exportErr }}</div>
+    </div>
+  </div>
+
   <!-- export overlay -->
   <div v-if="exporting" style="position:fixed;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);z-index:50;display:flex;align-items:center;justify-content:center">
     <div class="text-center space-y-4">
@@ -484,11 +551,13 @@ function diffHtml(orig,mod){
 }
 
 // ── Vue ──────────────────────────────────────────────────────────
-const {createApp,ref,computed,watch,onMounted,onUnmounted,nextTick}=Vue
+const {createApp,ref,computed,onMounted,onUnmounted,nextTick}=Vue
+
+const SESSION_KEY='aigc_session'
 
 createApp({
   setup(){
-    // phase
+    // phase: upload | review | paused | complete
     const phase=ref('upload')
     // keys
     const apiKey=ref('')
@@ -514,6 +583,13 @@ createApp({
     // UI
     const historyModal=ref(null)
     const toast=ref('');let toastT=null
+    // session
+    const hasRestoreDialog=ref(false)
+    const savedSession=ref(null)
+    const sessionSavedAt=ref('')
+    // abort controller for streaming (allows pause to stop in-flight request)
+    let reviewAbort=null
+    let autoSaveTimer=null
 
     // ── computed ──
     const curGroup=computed(()=>groups.value[currentIdx.value]||{heading:'',paragraphs:[]})
@@ -555,6 +631,52 @@ createApp({
       if(h.decision==='skipped')  return '⏭️ 跳过'
       return '🔄 生成'
     }
+    function fmtTime(iso){
+      try{
+        const d=new Date(iso)
+        return d.toLocaleString('zh-CN',{month:'numeric',day:'numeric',
+               hour:'2-digit',minute:'2-digit'})
+      }catch{return iso}
+    }
+
+    // ── session ──
+    function saveSession(){
+      if(!groups.value.length) return
+      const now=new Date()
+      try{
+        localStorage.setItem(SESSION_KEY,JSON.stringify({
+          v:1,savedAt:now.toISOString(),
+          groups:groups.value,results:results.value,
+          history:history.value,currentIdx:currentIdx.value
+        }))
+        sessionSavedAt.value=now.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})
+      }catch(e){showToast('自动保存失败（存储空间可能不足）')}
+    }
+    function loadSession(){
+      try{
+        const raw=localStorage.getItem(SESSION_KEY)
+        if(!raw) return null
+        const s=JSON.parse(raw)
+        if(s.v===1&&s.groups?.length){
+          s.savedAtFmt=fmtTime(s.savedAt)
+          return s
+        }
+      }catch{}
+      return null
+    }
+    function clearSession(){localStorage.removeItem(SESSION_KEY)}
+
+    function restoreSession(){
+      const s=savedSession.value;if(!s) return
+      groups.value=s.groups
+      results.value=s.results||[]
+      history.value=s.history||[]
+      currentIdx.value=s.currentIdx||0
+      hasRestoreDialog.value=false;savedSession.value=null
+      phase.value='review'
+      nextTick(()=>startGroup())
+    }
+    function dismissRestore(){hasRestoreDialog.value=false;savedSession.value=null;clearSession()}
 
     // ── upload ──
     function onDrop(e){dragOver.value=false;const f=e.dataTransfer?.files?.[0];if(f)doUpload(f)}
@@ -569,6 +691,7 @@ createApp({
         if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`)
         groups.value=data.groups;currentIdx.value=0
         results.value=[];history.value=[]
+        clearSession()
         phase.value='review'
         await nextTick();startGroup()
       }catch(e){uploadErr.value=e.message}
@@ -600,9 +723,7 @@ createApp({
         aiIndicators.value=data.indicators||[]
         aiConfidence.value=data.confidence||'medium'
         detectPhase.value='detected'
-        // animate ring
         setTimeout(()=>{animatedRate.value=data.rate},50)
-        // auto-trigger review only if rate > 60
         if(data.rate>60) startReview()
         else if(data.warning) showToast('检测提示：'+data.warning)
       }catch(e){
@@ -617,11 +738,13 @@ createApp({
       if(!curGroup.value) return
       if(!apiKey.value){showToast('请先填写审校 API 密钥');reviewPhase.value='idle';return}
       streamedText.value='';finalText.value='';reviewPhase.value='streaming'
+      reviewAbort=new AbortController()
       try{
         const res=await fetch('/review',{
           method:'POST',
           headers:{'Content-Type':'application/json','X-API-Key':apiKey.value},
-          body:JSON.stringify({text:curGroup.value.combined_text,temperature:temperature.value})
+          body:JSON.stringify({text:curGroup.value.combined_text,temperature:temperature.value}),
+          signal:reviewAbort.signal
         })
         if(!res.ok){const d=await res.json();throw new Error(d.error||`HTTP ${res.status}`)}
         const reader=res.body.getReader(),dec=new TextDecoder();let buf=''
@@ -642,6 +765,7 @@ createApp({
         }
         finalText.value=streamedText.value;reviewPhase.value='done'
       }catch(e){
+        if(e.name==='AbortError') return   // paused – silently stop
         reviewPhase.value='idle';showToast('AI 审校失败：'+e.message)
       }
     }
@@ -672,14 +796,35 @@ createApp({
         aiRate:aiRate.value,
         original:g.paragraphs,modified
       })
+      saveSession()   // ← auto-save after every decision
       const next=currentIdx.value+1
-      if(next>=groups.value.length){phase.value='complete'}
+      if(next>=groups.value.length){clearSession();phase.value='complete'}
       else{currentIdx.value=next;nextTick(()=>startGroup())}
     }
 
-    // ── pause export ──
-    async function pauseExport(){
-      // merge processed results + remaining groups as skipped
+    // ── pause / resume ──
+    function pauseReview(){
+      // abort any in-flight streaming
+      if(reviewPhase.value==='streaming'){
+        reviewAbort?.abort()
+        reviewPhase.value='idle';streamedText.value='';finalText.value=''
+      }
+      saveSession()
+      phase.value='paused'
+    }
+    function resumeReview(){
+      phase.value='review'
+      nextTick(()=>startGroup())
+    }
+    function startFresh(){
+      clearSession()
+      groups.value=[];results.value=[];history.value=[]
+      currentIdx.value=0;sessionSavedAt.value=''
+      phase.value='upload'
+    }
+
+    // ── export ──
+    async function exportPartial(){
       const partial=[...results.value]
       for(let i=currentIdx.value;i<groups.value.length;i++){
         const g=groups.value[i]
@@ -689,8 +834,7 @@ createApp({
       await exportDoc(partial,'partial_revised.docx')
     }
 
-    // ── export ──
-    async function exportDoc(payload, filename='revised.docx'){
+    async function exportDoc(payload,filename='revised.docx'){
       if(exporting.value) return
       exporting.value=true;exportErr.value=''
       try{
@@ -726,12 +870,26 @@ createApp({
       }
     }
 
+    function onBeforeUnload(){
+      if(phase.value==='review'||phase.value==='paused') saveSession()
+    }
+
     onMounted(()=>{
       apiKey.value=localStorage.getItem('ds_api_key')||''
       apiKeyDetect.value=localStorage.getItem('ds_detect_key')||''
+      // check for saved session
+      const s=loadSession()
+      if(s){savedSession.value=s;hasRestoreDialog.value=true}
       document.addEventListener('keydown',onKey)
+      window.addEventListener('beforeunload',onBeforeUnload)
+      // periodic auto-save every 60s while in review
+      autoSaveTimer=setInterval(()=>{if(phase.value==='review')saveSession()},60000)
     })
-    onUnmounted(()=>document.removeEventListener('keydown',onKey))
+    onUnmounted(()=>{
+      document.removeEventListener('keydown',onKey)
+      window.removeEventListener('beforeunload',onBeforeUnload)
+      clearInterval(autoSaveTimer)
+    })
 
     return{
       phase,apiKey,apiKeyDetect,dragOver,uploading,uploadErr,
@@ -743,9 +901,11 @@ createApp({
       exporting,exportErr,historyModal,toast,
       displayHtml,stats,rateColor,rateColorOf,
       saveKeys,badgeCls,decisionLabel,
+      hasRestoreDialog,savedSession,sessionSavedAt,
       onDrop,onFileChange,
       approve,forceReview,regenerate,enterEdit,confirmEdit,cancelEdit,skip,
-      pauseExport,exportDoc,
+      pauseReview,resumeReview,startFresh,exportPartial,exportDoc,
+      restoreSession,dismissRestore,
     }
   }
 }).mount('#app')
