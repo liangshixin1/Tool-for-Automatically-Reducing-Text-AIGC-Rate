@@ -2,7 +2,7 @@ import io
 import json
 import re
 import requests
-from flask import Flask, request, jsonify, render_template, Response, send_file
+from flask import Flask, request, jsonify, Response, send_file, send_from_directory
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -166,7 +166,8 @@ def parse_docx(file_obj):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Serve directly to bypass Jinja2 parsing (Vue uses {{ }} syntax too)
+    return send_from_directory("templates", "index.html")
 
 
 @app.route("/health")
@@ -331,6 +332,112 @@ def export_doc():
             ".wordprocessingml.document"
         ),
     )
+
+
+DETECT_PROMPT = """你是一名AIGC内容检测专家，专门识别中英双语学术教材中AI生成文本的痕迹。
+
+任务：对提交的文本进行AIGC率检测，输出0-100的整数评分。
+定义：0 = 完全人工写作，100 = 完全AI生成。
+
+━━━━━━━━ 中文部分评分信号 ━━━━━━━━
+
+【高权重 +12~18分/处】
+✦ 链式枚举过渡："首先/其次/再次/最后"完整链条出现
+✦ 套路收尾句："综上所述""总的来说""由此可见……重要性不言而喻"
+✦ 虚置引导语开头："值得注意的是""不难发现""需要指出的是""有必要强调"
+✦ 空洞评价叠用（同段≥2处）："至关重要""具有重要意义""发挥着不可忽视的作用"
+✦ 链条逻辑堆叠："A是B的基础，B是C的前提，C决定D"
+
+【中权重 +6~10分/处】
+✦ 同段相同句型框架重复≥3次（排比过度）
+✦ 流水线推进句："能够……从而……进而……"
+✦ 程度副词密集（非常/十分/极其/尤为/格外，同段≥3次）
+✦ 罗列≥6项名词，缺乏实质区分度
+✦ 段落过于圆满，无逻辑留白或个人见解
+
+【低权重 +3~5分/处】
+✦ 万能衔接词泛用（另外/同时/此外，同段≥3次）
+✦ 数字序号与散文段落混排（①②③或第一第二）
+✦ 口号式表述（在……背景下/……具有深远意义/……任重道远）
+
+━━━━━━━━ 英文部分评分信号 ━━━━━━━━
+
+【高权重 +12~18分/处】
+✦ "It is worth noting that / It is important to emphasize that / Needless to say" 等虚置引导
+✦ "In summary, / To conclude, / Overall, / In a nutshell," 等程式化收尾
+✦ "plays a crucial/vital/pivotal role in / is of paramount importance" 等（同段≥2处）
+✦ "not only…but also / on the one hand…on the other hand" 机械对仗堆砌（同段≥2处）
+
+【中权重 +6~10分/处】
+✦ 被动语态与现在分词过度连缀（同句≥3层嵌套）
+✦ 相同语法框架重复（多句均以 "This/These…will/can/should" 开头）
+✦ 程度副词滥用（significantly/substantially/considerably/undoubtedly）
+✦ "Furthermore, / Moreover, / Additionally," 同段高频出现≥3次
+
+━━━━━━━━ 评分规则 ━━━━━━━━
+
+1. 逐段扫描，记录每处具体信号并累加分值
+2. 累计分值超过100取100
+3. 中英文均有内容时，分别评分后取平均值
+4. 文本极短（<50字）或全为标题/数字时，置信度设为 low
+5. 仅看语言风格，不评判内容是否正确
+
+━━━━━━━━ 输出格式（严格执行） ━━━━━━━━
+
+直接输出以下JSON，不添加任何其他文字、markdown符号或解释：
+{
+  "rate": <0到100的整数>,
+  "indicators": [<最显著AIGC特征，最多5条，用中文简短描述具体特征>],
+  "confidence": "<high|medium|low>"
+}"""
+
+
+@app.route("/detect", methods=["POST"])
+def detect():
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    api_key = request.headers.get("X-API-Key-Detect", "").strip()
+
+    if not api_key:
+        return jsonify({"error": "请提供检测用 API 密钥"}), 401
+    if not text:
+        return jsonify({"rate": 0, "indicators": [], "confidence": "low"})
+
+    try:
+        resp = requests.post(
+            DEEPSEEK_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": DETECT_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.1,
+                "stream": False,
+                "max_tokens": 512,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        result = json.loads(content)
+        rate = max(0, min(100, int(result.get("rate", 50))))
+        indicators = [str(x) for x in result.get("indicators", [])][:5]
+        confidence = result.get("confidence", "medium")
+        return jsonify({"rate": rate, "indicators": indicators, "confidence": confidence})
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "检测请求超时（30s）"}), 504
+    except (KeyError, ValueError, json.JSONDecodeError) as exc:
+        # Model returned non-JSON or unexpected structure – return neutral score
+        return jsonify({"rate": 50, "indicators": [], "confidence": "low",
+                        "warning": f"结果解析失败：{exc}"})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
