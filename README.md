@@ -1,0 +1,1 @@
+# Tool-for-Automatically-Reducing-Text-AIGC-Rate
