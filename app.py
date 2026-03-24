@@ -448,6 +448,7 @@ def export_doc():
 
     data = request.get_json(silent=True) or {}
     results: list[dict] = data.get("results", [])
+    mode: str = data.get("mode", "tracked")   # "tracked" | "clean"
 
     if not results:
         return jsonify({"error": "没有可导出的内容"}), 400
@@ -465,35 +466,55 @@ def export_doc():
         modified: str = result.get("modified", "")
         decision: str = result.get("decision", "approved")
 
-        if decision == "skipped":
-            # Reproduce original paragraphs as-is, preserving all formatting
-            for pd in originals:
-                _add_para(doc,
-                          style_name=pd.get("style", "Normal"),
-                          fmt=pd.get("fmt", {}),
-                          text=pd["text"])
-        else:
-            # ── original paragraphs: same formatting + strikethrough + black ──
-            for pd in originals:
-                _add_para(doc,
-                          style_name=pd.get("style", "Normal"),
-                          fmt=pd.get("fmt", {}),
-                          text=pd["text"],
-                          strike=True, color=BLACK)
-
-            # ── modified text: same paragraph format as first body para, teal italic ──
-            if modified:
-                base = next((pd for pd in originals if pd.get("lang") != "heading"),
-                            originals[0] if originals else {})
-                base_style = base.get("style", "Normal")
-                base_fmt   = base.get("fmt", {})
-
-                for ln in (l for l in modified.split("\n") if l.strip()):
+        if mode == "clean":
+            # ── Clean version: only final content, no strikethrough / colour markup ──
+            if decision == "skipped" or not modified:
+                for pd in originals:
                     _add_para(doc,
-                              style_name=base_style,
-                              fmt=base_fmt,
-                              text=ln,
-                              color=TEAL, force_italic=True)
+                              style_name=pd.get("style", "Normal"),
+                              fmt=pd.get("fmt", {}),
+                              text=pd["text"])
+            else:
+                # Map modified lines → original paragraph styles by positional index
+                lines = [l for l in modified.split("\n") if l.strip()]
+                for i, ln in enumerate(lines):
+                    pd = originals[i] if i < len(originals) else (originals[-1] if originals else {})
+                    _add_para(doc,
+                              style_name=pd.get("style", "Normal"),
+                              fmt=pd.get("fmt", {}),
+                              text=ln)
+
+        else:
+            # ── Tracked version (default) ──
+            if decision == "skipped":
+                # Reproduce original paragraphs as-is, preserving all formatting
+                for pd in originals:
+                    _add_para(doc,
+                              style_name=pd.get("style", "Normal"),
+                              fmt=pd.get("fmt", {}),
+                              text=pd["text"])
+            else:
+                # original paragraphs: same formatting + strikethrough + black
+                for pd in originals:
+                    _add_para(doc,
+                              style_name=pd.get("style", "Normal"),
+                              fmt=pd.get("fmt", {}),
+                              text=pd["text"],
+                              strike=True, color=BLACK)
+
+                # modified text: same paragraph format as first body para, teal italic
+                if modified:
+                    base = next((pd for pd in originals if pd.get("lang") != "heading"),
+                                originals[0] if originals else {})
+                    base_style = base.get("style", "Normal")
+                    base_fmt   = base.get("fmt", {})
+
+                    for ln in (l for l in modified.split("\n") if l.strip()):
+                        _add_para(doc,
+                                  style_name=base_style,
+                                  fmt=base_fmt,
+                                  text=ln,
+                                  color=TEAL, force_italic=True)
 
         # Blank separator paragraph between groups (not after the last one)
         if idx < len(results) - 1:

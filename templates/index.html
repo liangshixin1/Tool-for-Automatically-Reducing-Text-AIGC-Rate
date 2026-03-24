@@ -165,6 +165,25 @@
         <span class="text-xs text-zinc-400 whitespace-nowrap">{{ currentIdx+1 }} / {{ groups.length }}</span>
       </div>
 
+      <!-- auto mode indicator / button -->
+      <template v-if="isAutoMode">
+        <div class="flex items-center gap-1 text-xs text-amber-400 flex-none" style="animation:dbounce 2s ease-in-out infinite">
+          🤖 <span>自动审阅中</span>
+        </div>
+        <button @click="stopAutoMode"
+                class="flex-none flex items-center gap-1 px-2.5 py-1 rounded border
+                       border-amber-700/50 text-xs text-amber-400 hover:bg-amber-900/30
+                       transition-colors bg-zinc-900/50">
+          🛑 停止自动
+        </button>
+      </template>
+      <button v-else @click="showAutoWarning=true"
+              class="flex-none flex items-center gap-1.5 px-2.5 py-1 rounded border
+                     border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500
+                     transition-colors bg-zinc-900/50">
+        🤖 全自动
+      </button>
+
       <!-- pause button -->
       <button @click="pauseReview"
               class="flex-none flex items-center gap-1.5 px-2.5 py-1 rounded border
@@ -425,11 +444,24 @@
           <div class="text-xs text-zinc-500 mt-1">保留原文</div>
         </div>
       </div>
-      <button @click="exportDoc(results)" :disabled="exporting"
-              class="w-full py-3 rounded-lg font-medium text-sm transition-all
-                     bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/40 text-white">
-        {{ exporting?'生成中…':'📥 导出 Word 文档' }}
-      </button>
+      <div class="grid grid-cols-2 gap-2">
+        <button @click="exportDoc(results,'revised.docx','tracked')" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-sm font-medium transition-all
+                       bg-blue-700/60 hover:bg-blue-600/60 border border-blue-600/40 text-blue-200
+                       disabled:opacity-40">
+          <span>📥</span>
+          <span>{{ exporting?'生成中…':'导出审阅版' }}</span>
+          <span class="text-[10px] text-blue-400/60">原文删除线 + 修改青绿色</span>
+        </button>
+        <button @click="exportDoc(results,'revised_clean.docx','clean')" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-sm font-medium transition-all
+                       bg-zinc-800 hover:bg-zinc-700 border border-zinc-600/40 text-zinc-200
+                       disabled:opacity-40">
+          <span>📄</span>
+          <span>{{ exporting?'生成中…':'导出纯净版' }}</span>
+          <span class="text-[10px] text-zinc-500">仅最终内容，无标记</span>
+        </button>
+      </div>
       <div v-if="exportErr" class="text-sm text-red-400">{{ exportErr }}</div>
     </div>
   </div>
@@ -444,14 +476,23 @@
              / 共 <span class="text-zinc-200 font-medium">{{ groups.length }}</span> 组</div>
         <div v-if="sessionSavedAt" class="text-xs text-zinc-600">进度已自动保存 · {{ sessionSavedAt }}</div>
       </div>
-      <div class="grid grid-cols-3 gap-2">
-        <button @click="exportPartial" :disabled="exporting"
+      <div class="grid grid-cols-2 gap-2">
+        <button @click="exportPartial('tracked')" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium
+                       bg-blue-900/50 hover:bg-blue-800/50 border border-blue-700/40 text-blue-300
+                       disabled:opacity-40 transition-colors">
+          <span class="text-lg">📥</span>
+          <span>{{ exporting?'生成中…':'导出审阅版' }}</span>
+        </button>
+        <button @click="exportPartial('clean')" :disabled="exporting"
                 class="flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium
                        bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300
                        disabled:opacity-40 transition-colors">
-          <span class="text-lg">📥</span>
-          <span>{{ exporting?'生成中…':'导出当前进度' }}</span>
+          <span class="text-lg">📄</span>
+          <span>{{ exporting?'生成中…':'导出纯净版' }}</span>
         </button>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
         <button @click="resumeReview"
                 class="flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium
                        bg-blue-800/60 hover:bg-blue-700/60 border border-blue-700/50 text-blue-300
@@ -476,6 +517,42 @@
     <div class="text-center space-y-4">
       <div class="dots justify-center"><span></span><span></span><span></span></div>
       <p class="text-zinc-300 text-sm">正在生成 Word 文档，请稍候…</p>
+    </div>
+  </div>
+
+  <!-- auto-mode warning modal -->
+  <div v-if="showAutoWarning"
+       style="position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);z-index:50;display:flex;align-items:center;justify-content:center"
+       @click.self="showAutoWarning=false">
+    <div class="bg-zinc-900 border border-amber-700/50 rounded-xl w-full max-w-sm mx-4 p-6 space-y-4">
+      <div class="flex items-center gap-3">
+        <span class="text-3xl">⚠️</span>
+        <div>
+          <div class="font-semibold text-amber-300">实验性功能</div>
+          <div class="text-xs text-zinc-500 mt-0.5">全自动审阅模式</div>
+        </div>
+      </div>
+      <div class="text-sm text-zinc-300 space-y-2">
+        <p>启动后将对所有剩余段落组自动执行，无需手动确认：</p>
+        <ul class="space-y-1.5 text-sm text-zinc-400 pl-1">
+          <li>· AI 率 <span class="text-red-400 font-medium">&gt; 60%</span>：自动审校并 <span class="text-emerald-400">批准</span> 修改</li>
+          <li>· AI 率 <span class="text-amber-400 font-medium">≤ 60%</span>：自动 <span class="text-zinc-300">跳过</span>（保留原文）</li>
+          <li>· 未设置检测密钥：直接审校所有段落并自动批准</li>
+        </ul>
+        <p class="text-xs text-zinc-600 pt-1">进度仍会自动保存。随时可点击「🛑 停止自动」回到手动模式，或点击「⏸ 暂停」退出审校。</p>
+      </div>
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button @click="confirmAutoMode"
+                class="py-2.5 rounded-lg text-sm font-medium transition-colors
+                       bg-amber-700/60 hover:bg-amber-600/60 border border-amber-600/40 text-amber-200">
+          确认，开始自动审阅
+        </button>
+        <button @click="showAutoWarning=false"
+                class="py-2.5 rounded-lg text-sm font-medium transition-colors
+                       bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-400">
+          取消
+        </button>
+      </div>
     </div>
   </div>
 
@@ -590,6 +667,9 @@ createApp({
     // abort controller for streaming (allows pause to stop in-flight request)
     let reviewAbort=null
     let autoSaveTimer=null
+    // auto mode
+    const isAutoMode=ref(false)
+    const showAutoWarning=ref(false)
 
     // ── computed ──
     const curGroup=computed(()=>groups.value[currentIdx.value]||{heading:'',paragraphs:[]})
@@ -724,8 +804,14 @@ createApp({
         aiConfidence.value=data.confidence||'medium'
         detectPhase.value='detected'
         setTimeout(()=>{animatedRate.value=data.rate},50)
-        if(data.rate>60) startReview()
-        else if(data.warning) showToast('检测提示：'+data.warning)
+        if(data.rate>60){
+          startReview()
+        }else if(isAutoMode.value){
+          // auto mode: skip low-rate groups after briefly showing the ring
+          setTimeout(()=>{if(isAutoMode.value) skip()},700)
+        }else{
+          if(data.warning) showToast('检测提示：'+data.warning)
+        }
       }catch(e){
         showToast('AI率检测失败，将直接审校：'+e.message)
         detectPhase.value='detected';aiRate.value=null
@@ -764,6 +850,10 @@ createApp({
           }
         }
         finalText.value=streamedText.value;reviewPhase.value='done'
+        // auto mode: approve after a brief pause so the user can see the diff
+        if(isAutoMode.value){
+          setTimeout(()=>{if(isAutoMode.value&&reviewPhase.value==='done') approve()},1200)
+        }
       }catch(e){
         if(e.name==='AbortError') return   // paused – silently stop
         reviewPhase.value='idle';showToast('AI 审校失败：'+e.message)
@@ -802,8 +892,28 @@ createApp({
       else{currentIdx.value=next;nextTick(()=>startGroup())}
     }
 
+    // ── auto mode ──
+    function stopAutoMode(){ isAutoMode.value=false }
+    function confirmAutoMode(){
+      showAutoWarning.value=false
+      isAutoMode.value=true
+      // kick off from current state if we're already mid-review
+      if(phase.value==='review'){
+        if(reviewPhase.value==='done'){
+          setTimeout(()=>{if(isAutoMode.value) approve()},600)
+        }else if(reviewPhase.value==='idle'&&detectPhase.value==='detected'){
+          // waiting at low-rate prompt
+          setTimeout(()=>{if(isAutoMode.value) skip()},400)
+        }else if(reviewPhase.value==='idle'&&detectPhase.value==='idle'){
+          startGroup()
+        }
+        // if streaming / detecting: the completion handlers will fire auto-approve / auto-skip
+      }
+    }
+
     // ── pause / resume ──
     function pauseReview(){
+      isAutoMode.value=false   // always stop auto mode when pausing
       // abort any in-flight streaming
       if(reviewPhase.value==='streaming'){
         reviewAbort?.abort()
@@ -824,24 +934,25 @@ createApp({
     }
 
     // ── export ──
-    async function exportPartial(){
+    async function exportPartial(mode='tracked'){
       const partial=[...results.value]
       for(let i=currentIdx.value;i<groups.value.length;i++){
         const g=groups.value[i]
         partial.push({id:g.id,original:g.paragraphs,modified:'',decision:'skipped'})
       }
       if(!partial.length){showToast('还没有可导出的内容');return}
-      await exportDoc(partial,'partial_revised.docx')
+      const fname=mode==='clean'?'partial_clean.docx':'partial_revised.docx'
+      await exportDoc(partial,fname,mode)
     }
 
-    async function exportDoc(payload,filename='revised.docx'){
+    async function exportDoc(payload,filename='revised.docx',mode='tracked'){
       if(exporting.value) return
       exporting.value=true;exportErr.value=''
       try{
         const res=await fetch('/export',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({results:payload})
+          body:JSON.stringify({results:payload,mode})
         })
         if(!res.ok){const d=await res.json();throw new Error(d.error||`HTTP ${res.status}`)}
         const blob=await res.blob()
@@ -902,10 +1013,12 @@ createApp({
       displayHtml,stats,rateColor,rateColorOf,
       saveKeys,badgeCls,decisionLabel,
       hasRestoreDialog,savedSession,sessionSavedAt,
+      isAutoMode,showAutoWarning,
       onDrop,onFileChange,
       approve,forceReview,regenerate,enterEdit,confirmEdit,cancelEdit,skip,
       pauseReview,resumeReview,startFresh,exportPartial,exportDoc,
       restoreSession,dismissRestore,
+      stopAutoMode,confirmAutoMode,
     }
   }
 }).mount('#app')
