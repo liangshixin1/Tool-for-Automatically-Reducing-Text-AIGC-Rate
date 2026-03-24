@@ -11,7 +11,8 @@
 - 用户上传中英双语教材 `.docx`
 - 系统先检测每段的 AI 生成率（0–100%），再调用 DeepSeek 审校
 - 用户逐段审批（批准/重新生成/手动编辑/跳过），支持随时暂停并恢复
-- 最终导出对照 Word：原文黑色删除线 + 修改版青绿色斜体
+- 支持**全自动审阅**（实验性）：AI 率 > 60% 自动审校并批准，≤ 60% 自动跳过
+- 最终导出两种格式：**审阅版**（原文删除线 + 青绿色斜体对照）或**纯净版**（仅最终内容，无标记）
 
 ---
 
@@ -63,12 +64,13 @@
 | `POST /upload` | 解析 docx，返回 `{groups, total}`，每段含 `fmt` 格式数据 |
 | `POST /review` | SSE 流式调用 DeepSeek，请求头 `X-API-Key`，body `{text, temperature}` |
 | `POST /detect` | 非流式调用 DeepSeek，请求头 `X-API-Key-Detect`，`response_format: {type: json_object}`，返回 `{rate, indicators, confidence}` |
-| `POST /export` | 接收 `{results: [{id, original, modified, decision}]}`，`original` 每段含 `fmt`，生成并返回 `.docx` |
+| `POST /export` | 接收 `{results: [...], mode}`，`mode` 为 `"tracked"`（审阅版，默认）或 `"clean"`（纯净版），生成并返回 `.docx` |
 | `GET /health` | `{"status": "ok"}` |
 
-### 导出格式
-- **skipped 或未处理**：原样复现段落（完整格式，无删除线）
-- **approved / edited**：原段（格式保留 + 删除线 + 黑色）→ 修改行（同款格式 + 青绿色 `RGB 0,134,134` + 斜体）
+### 导出格式（`mode` 参数）
+- **`"tracked"`（审阅版，默认）**：approved/edited 段同时输出原文（删除线）+ 修改版（青绿色 `RGB 0,134,134` 斜体）；skipped/未处理原样复现
+- **`"clean"`（纯净版）**：approved/edited 仅输出修改后文本，按段落位置索引映射回原始段落样式；skipped/未处理原样输出；无任何标记色或删除线
+- 两种格式均保留：段落样式名、字体（ASCII + CJK 双通道）、字号、粗斜体、间距、缩进、对齐
 - 组间一个空行隔开
 
 ---
@@ -94,6 +96,8 @@ phase: 'upload' → 'review' → 'paused' → 'review'（继续）
 | `results` | 已决策的结果数组，每条 `{id, original, modified, decision}` |
 | `history` | 历史记录（含 `aiRate`、`retryCount` 用于右侧面板显示） |
 | `sessionSavedAt` | 上次自动保存的时间字符串，显示在导航栏 |
+| `isAutoMode` | 是否处于全自动审阅模式（`boolean`），影响 detect/review 完成后的自动决策行为 |
+| `showAutoWarning` | 是否显示全自动模式确认弹窗 |
 
 ### 会话持久化流程
 1. 每次 `commitResult()`（做出决策后）→ `saveSession()` 写入 `localStorage`
@@ -111,10 +115,12 @@ phase: 'upload' → 'review' → 'paused' → 'review'（继续）
 | `startDetect()` | POST `/detect`，rate > 60 自动调 `startReview()` |
 | `startReview()` | POST `/review`，读取 SSE 流，用 `AbortController` 支持中断 |
 | `commitResult(decision, modified)` | 记录决策，自动保存，推进到下一组或进入 complete |
-| `pauseReview()` | 中断流式 → `saveSession()` → `phase='paused'` |
+| `pauseReview()` | 中断流式 → 重置 `isAutoMode` → `saveSession()` → `phase='paused'` |
 | `resumeReview()` | `phase='review'` → `startGroup()` |
-| `exportPartial()` | 已处理结果 + 剩余组标记为 skipped → 调 `/export` |
-| `exportDoc(payload, filename)` | 通用导出，触发浏览器下载 |
+| `confirmAutoMode()` | 确认启动全自动审阅：根据当前状态直接 approve/skip/继续，后续组全自动处理 |
+| `stopAutoMode()` | 将 `isAutoMode` 置 false，回到手动模式（不暂停，继续当前组） |
+| `exportPartial(mode)` | 已处理结果 + 剩余组标记为 skipped → 调 `/export`，`mode` 决定审阅版或纯净版 |
+| `exportDoc(payload, filename, mode)` | 通用导出，`mode` 默认 `'tracked'`，触发浏览器下载 |
 
 ---
 
@@ -133,6 +139,8 @@ phase: 'upload' → 'review' → 'paused' → 'review'（继续）
 6. **检测阈值**：AI 率 > 60 才自动触发审校。`DETECT_PROMPT` 的评分起点是 10 分（非 0），以"宁可高判"为原则。
 
 7. **`response_format: {type: json_object}`**：`/detect` 路由在调用 DeepSeek 时设置了此参数，确保返回合法 JSON。如果切换到不支持该参数的模型，需要同步移除或用 prompt 约束替代。
+
+8. **全自动模式安全机制**：所有 `setTimeout` 延迟回调（detect 后跳过、review 后批准）都会在执行前重新检查 `isAutoMode.value`。这样在延迟期间调用 `stopAutoMode()` 或 `pauseReview()` 后，回调会静默跳过而不执行自动决策。**不要将这些检查改写为提前捕获变量的闭包**。
 
 ---
 
