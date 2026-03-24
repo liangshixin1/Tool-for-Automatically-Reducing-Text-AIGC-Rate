@@ -618,6 +618,128 @@ DETECT_PROMPT = """你是一名AIGC内容检测专家，专门识别中英双语
 }"""
 
 
+PROOFREAD_PROMPT = """你是一名资深专业编审，专注于教材内容质量审核。本次任务是对已完成 AIGC 降率处理后的教材段落进行二审，聚焦以下三个维度，而非 AIGC 痕迹识别。
+
+本教材为中英双语外贸谈判类教材，面向高等院校经贸类专业本科生。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+审校维度一：语言准确、通顺与流畅
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【中文】
+・用词是否准确，有无歧义、混用或概念偷换（如"报盘"与"还盘"混用）
+・句子结构是否清晰，有无成分残缺、搭配不当、表达生硬或翻译腔
+・语言是否流畅自然，有无口语化表达混入正式文体
+
+【英文】
+・语法是否正确（时态、语态、主谓一致、冠词、介词搭配）
+・用词是否地道，有无中式英语（Chinglish）或不自然措辞
+・句子是否流畅，有无过度嵌套从句或语序别扭
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+审校维度二：知识硬伤与实务逻辑校验
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+・专业术语使用是否准确（如贸易术语 Incoterms 2020、信用证 UCP 600、CISG 条款等）
+・贸易流程、操作步骤的描述是否符合实际操作逻辑
+・数字、比例、时限等事实性表述是否合理，有无明显错误
+・中英文专业术语是否前后一致、双语对应准确
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+审校维度三：逻辑连贯性
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+・段落内部是否存在前后矛盾或自相抵触
+・各句之间的逻辑关系是否清晰（因果、递进、转折、让步等）
+・段落论述是否完整，有无逻辑断层或结论缺乏依据
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+输出规则（严格执行）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+若该段落在上述三个维度均无明显问题，直接输出：
+【无需修改】
+
+若存在需要修改的问题，按以下格式输出，不得添加任何其他内容：
+【修改建议】
+（此处输出修改后的完整段落，保持与原文相同的段落数量和顺序，不添加任何说明性文字）
+
+【修改理由】
+（此处逐条列出问题，每条以"·"开头，注明：问题所在的原文片段、问题类型（用词/语法/知识点/逻辑），以及修改原因）"""
+
+
+@app.route("/proofread", methods=["POST"])
+def proofread():
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    api_key = request.headers.get("X-API-Key-Proofread", "").strip()
+
+    if not api_key:
+        return jsonify({"error": "请先填写二审 API 密钥"}), 401
+    if not text:
+        return jsonify({"error": "文本内容为空"}), 400
+
+    def generate():
+        try:
+            resp = requests.post(
+                DEEPSEEK_API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": PROOFREAD_PROMPT},
+                        {"role": "user", "content": text},
+                    ],
+                    "temperature": 0.3,
+                    "stream": True,
+                    "max_tokens": 4096,
+                },
+                stream=True,
+                timeout=120,
+            )
+
+            if resp.status_code != 200:
+                try:
+                    err_body = resp.json()
+                    msg = err_body.get("error", {}).get("message", f"HTTP {resp.status_code}")
+                except Exception:
+                    msg = f"HTTP {resp.status_code}"
+                yield f"data: {json.dumps({'error': msg})}\n\n"
+                return
+
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload.strip() == "[DONE]":
+                    yield "data: [DONE]\n\n"
+                    return
+                try:
+                    chunk = json.loads(payload)
+                    content = chunk["choices"][0]["delta"].get("content", "")
+                    if content:
+                        yield f"data: {json.dumps({'content': content})}\n\n"
+                except Exception:
+                    pass
+
+        except requests.exceptions.Timeout:
+            yield f"data: {json.dumps({'error': 'API 请求超时（120 s），请重试'})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/detect", methods=["POST"])
 def detect():
     data = request.get_json(silent=True) or {}
@@ -664,6 +786,308 @@ def detect():
                         "warning": f"结果解析失败：{exc}"})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+ZERO_CLASSIFY_PROMPT = """你是教材结构整理专家。将提交的段落分类到以下五个模块之一，或标记为"丢弃"：
+- 理论精讲：概念定义、理论阐述、背景知识
+- 谈判技巧：实战策略、技巧方法、注意事项
+- 口语实例：对话示例、句型展示、情景会话
+- 核心练习：习题、练习题、思考题、案例分析
+- 术语汇总&例句：术语列表、词汇解释、配套例句
+- 丢弃：AI应用、知识图谱、与外贸谈判无关的内容
+
+严格按JSON格式返回，不添加任何其他内容：
+{"results": [{"id": <段落id>, "module": "<模块名或丢弃>", "confidence": "<high|low>"}]}"""
+
+
+ZERO_RECOMMEND_PROMPT = """你是外贸教材编辑助手。根据当前章节的主题，从口语实例库中推荐最相关的话题。
+
+严格按JSON格式返回，按相关度降序，不添加其他内容：
+{
+  "recommended": [
+    {"topic": "话题名", "reason": "推荐理由（20字内）", "relevance": "high|medium"}
+  ]
+}
+最多返回6条。"""
+
+
+@app.route("/zero/classify", methods=["POST"])
+def zero_classify():
+    data = request.get_json(silent=True) or {}
+    chapter_title = data.get("chapterTitle", "")
+    paragraphs = data.get("paragraphs", [])
+    api_key = request.headers.get("X-API-Key-Zero", "").strip()
+
+    if not api_key:
+        return jsonify({"error": "请提供零审 API 密钥"}), 401
+    if not paragraphs:
+        return jsonify({"error": "段落列表为空"}), 400
+
+    user_content = f"章节：{chapter_title}\n\n" + "\n".join(
+        f"[{p['id']}] {p['text'][:500]}" for p in paragraphs
+    )
+
+    try:
+        resp = requests.post(
+            DEEPSEEK_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": ZERO_CLASSIFY_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0.1,
+                "stream": False,
+                "max_tokens": 2048,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        result = json.loads(content)
+        return jsonify(result)
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "分类请求超时（60s）"}), 504
+    except (KeyError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify({"error": f"结果解析失败：{exc}"}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/zero/recommend-oral", methods=["POST"])
+def zero_recommend_oral():
+    data = request.get_json(silent=True) or {}
+    chapter_title = data.get("chapterTitle", "")
+    chapter_summary = data.get("chapterSummary", "")
+    all_topics = data.get("allTopics", [])
+    api_key = request.headers.get("X-API-Key-Zero", "").strip()
+
+    if not api_key:
+        return jsonify({"error": "请提供零审 API 密钥"}), 401
+    if not all_topics:
+        return jsonify({"recommended": []})
+
+    user_content = (
+        f"章节：{chapter_title}\n\n"
+        f"章节摘要：{chapter_summary}\n\n"
+        f"所有可用话题：{', '.join(all_topics)}"
+    )
+
+    try:
+        resp = requests.post(
+            DEEPSEEK_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": ZERO_RECOMMEND_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0.1,
+                "stream": False,
+                "max_tokens": 512,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        result = json.loads(content)
+        return jsonify(result)
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "推荐请求超时（30s）"}), 504
+    except (KeyError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify({"error": f"结果解析失败：{exc}"}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+ZERO_ASSIGN_PROMPT = """你是外贸谈判教材的专业编辑。请根据章节段落列表，将每个段落分配到对应的模块，或标记为"丢弃"。
+
+五个模块定义：
+- 理论精讲：概念定义、理论阐述、背景知识
+- 谈判技巧：实战策略、技巧方法、注意事项
+- 口语实例：对话示例、句型展示、情景会话
+- 核心练习：习题、练习题、思考题、案例分析
+- 术语汇总&例句：术语列表、词汇解释、配套例句
+- 丢弃：AI工具介绍、知识图谱、平台操作说明、与外贸谈判教材完全无关的内容
+
+分配原则：
+- 依据段落标题和内容综合判断，有疑义的优先归入相关模块而非丢弃
+- 每个段落只分配一个模块
+- 严格按JSON格式输出，仅含模块分配，不输出任何段落内容：
+{"assignments": {"<id>": "<模块名或丢弃>", ...}}"""
+
+
+@app.route("/zero/organize", methods=["POST"])
+def zero_organize():
+    data = request.get_json(silent=True) or {}
+    chapter_title = data.get("chapterTitle", "")
+    groups = data.get("groups", [])   # [{id, heading, preview}]
+    api_key = request.headers.get("X-API-Key-Zero", "").strip()
+
+    if not api_key:
+        return jsonify({"error": "请提供零审 API 密钥"}), 401
+    if not groups:
+        return jsonify({"error": "段落列表为空"}), 400
+
+    lines = [f"章节：{chapter_title}", ""]
+    for g in groups:
+        lines.append(f"[{g['id']}] 标题：{g.get('heading','')}")
+        if g.get("preview"):
+            lines.append(f"    内容：{g['preview']}")
+    user_content = "\n".join(lines)
+
+    try:
+        resp = requests.post(
+            DEEPSEEK_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": ZERO_ASSIGN_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0.1,
+                "stream": False,
+                "max_tokens": 4096,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        result = json.loads(content)
+        return jsonify(result)
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "分配请求超时（120s）"}), 504
+    except (KeyError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify({"error": f"结果解析失败：{exc}"}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/zero/export", methods=["POST"])
+def zero_export():
+    from docx import Document
+    from docx.shared import Pt, Cm
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    data = request.get_json(silent=True) or {}
+    modules: dict = data.get("modules", {})
+
+    MODULES_ORDER = ["理论精讲", "谈判技巧", "口语实例", "核心练习", "术语汇总&例句"]
+
+    doc = Document()
+    for p in list(doc.paragraphs):
+        p._element.getparent().remove(p._element)
+
+    section = doc.sections[0]
+    section.top_margin    = Cm(2.54)
+    section.bottom_margin = Cm(2.54)
+    section.left_margin   = Cm(3.17)
+    section.right_margin  = Cm(3.17)
+
+    def _run(para, text, bold=False, size_pt=11,
+             ascii_font="Times New Roman", ea_font="宋体"):
+        run = para.add_run(text)
+        run.bold = bold
+        run.font.size = Pt(size_pt)
+        try:
+            rpr = run._element.get_or_add_rPr()
+            rfonts = rpr.find(qn("w:rFonts"))
+            if rfonts is None:
+                rfonts = OxmlElement("w:rFonts")
+                rpr.insert(0, rfonts)
+            rfonts.set(qn("w:ascii"), ascii_font)
+            rfonts.set(qn("w:hAnsi"), ascii_font)
+            rfonts.set(qn("w:eastAsia"), ea_font)
+        except Exception:
+            pass
+        return run
+
+    # Sub-heading: lines starting with "1.1", "1.1.1 xxx", "第X节/章/条", short enough
+    subhead_re = re.compile(
+        r'^(\d+(\.\d+)+[\s\u3000\u4e00-\u9fff]'
+        r'|第[一二三四五六七八九十百\d]+[章节条部篇]\s*)'
+    )
+
+    first = True
+    for module in MODULES_ORDER:
+        text = (modules.get(module) or "").strip()
+        if not text:
+            continue
+
+        if not first:
+            sep = doc.add_paragraph()
+            sep.paragraph_format.space_before = Pt(0)
+            sep.paragraph_format.space_after  = Pt(0)
+        first = False
+
+        # H1 — module name
+        h1 = doc.add_paragraph()
+        try:
+            h1.style = doc.styles["Heading 1"]
+        except Exception:
+            pass
+        h1.paragraph_format.space_before = Pt(18)
+        h1.paragraph_format.space_after  = Pt(9)
+        _run(h1, module, bold=True, size_pt=16, ascii_font="Arial", ea_font="黑体")
+
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            is_subhead = bool(subhead_re.match(line)) and len(line) < 80
+
+            if is_subhead:
+                h2 = doc.add_paragraph()
+                try:
+                    h2.style = doc.styles["Heading 2"]
+                except Exception:
+                    pass
+                h2.paragraph_format.space_before = Pt(12)
+                h2.paragraph_format.space_after  = Pt(4)
+                _run(h2, line, bold=True, size_pt=13, ascii_font="Arial", ea_font="黑体")
+            else:
+                body = doc.add_paragraph()
+                try:
+                    body.style = doc.styles["Normal"]
+                except Exception:
+                    pass
+                body.paragraph_format.space_before       = Pt(0)
+                body.paragraph_format.space_after        = Pt(4)
+                body.paragraph_format.first_line_indent  = Pt(0)
+                _run(body, line, size_pt=11)
+
+    if first:
+        return jsonify({"error": "没有可导出的内容"}), 400
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="zero_structured.docx",
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document"
+        ),
+    )
 
 
 if __name__ == "__main__":

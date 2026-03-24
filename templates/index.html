@@ -99,7 +99,24 @@
       </div>
     </div>
 
-    <div class="w-full max-w-md space-y-7">
+    <!-- mode toggle -->
+    <div class="w-full max-w-md mb-2">
+      <div class="flex rounded-lg bg-zinc-900 border border-zinc-800 p-0.5">
+        <button @click="zeroMode=false"
+                class="flex-1 py-1.5 text-xs rounded-md font-medium transition-colors"
+                :class="!zeroMode ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'">
+          一审（AIGC降率）
+        </button>
+        <button @click="zeroMode=true"
+                class="flex-1 py-1.5 text-xs rounded-md font-medium transition-colors"
+                :class="zeroMode ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'">
+          零审（结构整理）
+        </button>
+      </div>
+    </div>
+
+    <!-- ── 一审模式 ── -->
+    <div v-if="!zeroMode" class="w-full max-w-md space-y-7">
 
       <div class="text-center">
         <div class="text-xs tracking-widest text-zinc-500 uppercase mb-1">AIGC Trace Eliminator</div>
@@ -126,6 +143,17 @@
                  placeholder-zinc-600 focus:outline-none focus:border-zinc-500"/>
       </div>
 
+      <!-- proofread key -->
+      <div class="space-y-1">
+        <label class="text-xs text-zinc-400 uppercase tracking-wide">
+          二审校对密钥
+          <span class="ml-1 text-zinc-600 normal-case">（用于语言/逻辑/知识二审，可留空后填）</span>
+        </label>
+        <input v-model="apiKeyProofread" @input="saveKeys" type="password" placeholder="sk-... （选填）"
+          class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-200
+                 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"/>
+      </div>
+
       <!-- drop zone -->
       <div class="drop-zone rounded-xl p-10 text-center cursor-pointer"
            :class="{over:dragOver}"
@@ -136,6 +164,67 @@
           <div class="text-4xl mb-3">📄</div>
           <p class="text-zinc-300 font-medium">拖拽 .docx 至此，或点击选择</p>
           <p class="text-xs text-zinc-600 mt-1">仅支持 Word 2007+ (.docx)，最大 50 MB</p>
+        </div>
+        <div v-else class="flex flex-col items-center gap-3">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <p class="text-sm text-zinc-400">正在解析文档…</p>
+        </div>
+      </div>
+
+      <div v-if="uploadErr"
+           class="bg-red-950/60 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
+        {{ uploadErr }}
+      </div>
+    </div>
+
+    <!-- ── 零审模式 ── -->
+    <div v-else class="w-full max-w-md space-y-5">
+
+      <div class="text-center">
+        <div class="text-xs tracking-widest text-zinc-500 uppercase mb-1">Zero Review</div>
+        <h1 class="text-2xl font-semibold text-zinc-100">零审·结构整理</h1>
+        <p class="text-sm text-zinc-500 mt-1">将教材原稿分类整理为五个标准模块，并融合口语实例</p>
+      </div>
+
+      <!-- zero key -->
+      <div class="space-y-1">
+        <label class="text-xs text-zinc-400 uppercase tracking-wide">零审 API 密钥</label>
+        <input v-model="apiKeyZero" @input="saveKeys" type="password" placeholder="sk-..."
+          class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-200
+                 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"/>
+      </div>
+
+      <!-- oral library -->
+      <div class="space-y-1">
+        <label class="text-xs text-zinc-400 uppercase tracking-wide">
+          口语实例库
+          <span class="ml-1 text-zinc-600 normal-case">（JSON，选填，存入浏览器）</span>
+        </label>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 text-xs text-zinc-500 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 truncate">
+            {{ oralLibraryMeta ? oralLibraryMeta.name + '（' + oralLibraryMeta.count + ' 个话题）' : '未加载' }}
+          </div>
+          <button @click="$refs.oralJsonInput.click()"
+                  class="px-3 py-2 text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-zinc-300 transition-colors whitespace-nowrap">
+            {{ oralLibraryMeta ? '重新上传' : '上传 JSON' }}
+          </button>
+          <input ref="oralJsonInput" type="file" accept=".json" class="hidden"
+                 @change="e => { uploadOralJSON(e.target.files[0]); e.target.value='' }"/>
+        </div>
+      </div>
+
+      <!-- drop zone for zero -->
+      <div class="drop-zone rounded-xl p-10 text-center cursor-pointer"
+           :class="{over:dragOver}"
+           @dragover.prevent="dragOver=true" @dragleave.prevent="dragOver=false"
+           @drop.prevent="e => { dragOver=false; const f=e.dataTransfer?.files?.[0]; if(f) doZeroUpload(f) }"
+           @click="$refs.zeroFi.click()">
+        <input ref="zeroFi" type="file" accept=".docx" class="hidden"
+               @change="e => doZeroUpload(e.target.files[0])"/>
+        <div v-if="!uploading">
+          <div class="text-4xl mb-3">🗂️</div>
+          <p class="text-zinc-300 font-medium">拖拽原稿 .docx 至此，或点击选择</p>
+          <p class="text-xs text-zinc-600 mt-1">上传后自动进入分类整理流程</p>
         </div>
         <div v-else class="flex flex-col items-center gap-3">
           <div class="dots"><span></span><span></span><span></span></div>
@@ -463,6 +552,13 @@
         </button>
       </div>
       <div v-if="exportErr" class="text-sm text-red-400">{{ exportErr }}</div>
+      <button @click="enterSecondReview(results)"
+              class="w-full flex flex-col items-center gap-1 py-3 rounded-lg text-sm font-medium transition-all
+                     bg-violet-900/40 hover:bg-violet-800/50 border border-violet-700/40 text-violet-300">
+        <span>🔍</span>
+        <span>进入二审</span>
+        <span class="text-[10px] text-violet-500">语言·知识·逻辑 深度校验</span>
+      </button>
     </div>
   </div>
 
@@ -508,6 +604,459 @@
           <span>重新开始</span>
         </button>
       </div>
+      <button v-if="results.length" @click="enterSecondReview(results)"
+              class="w-full flex flex-col items-center gap-1 py-3 rounded-lg text-xs font-medium transition-all
+                     bg-violet-900/40 hover:bg-violet-800/50 border border-violet-700/40 text-violet-300">
+        <span class="text-lg">🔍</span>
+        <span>进入二审（已处理 {{ results.length }} 组）</span>
+      </button>
+      <div v-if="exportErr" class="text-sm text-red-400">{{ exportErr }}</div>
+    </div>
+  </div>
+
+  <!-- ══════════════  SECOND REVIEW  ══════════════ -->
+  <template v-else-if="phase==='second-review'">
+
+    <!-- nav -->
+    <nav class="flex-none flex items-center gap-2 px-4 h-12 bg-[#0d0e11] border-b border-zinc-800/60">
+      <span class="font-semibold text-zinc-200 text-sm whitespace-nowrap">二审 · 质量校验</span>
+
+      <!-- progress -->
+      <div class="flex items-center gap-2 flex-1 min-w-0">
+        <div class="flex-1 h-1 bg-zinc-800 rounded-full overflow-hidden">
+          <div class="pbar h-full bg-violet-500 rounded-full" :style="{width:s2ProgressPct+'%'}"></div>
+        </div>
+        <span class="text-xs text-zinc-400 whitespace-nowrap">{{ s2Idx+1 }} / {{ s2Groups.length }}</span>
+      </div>
+
+      <!-- compact proofread key -->
+      <div class="flex items-center gap-1.5 flex-none">
+        <span class="text-[10px] text-zinc-600">二审密钥</span>
+        <input v-model="apiKeyProofread" @input="saveKeys" type="password" placeholder="sk-..."
+          class="w-32 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
+        <div class="w-1.5 h-1.5 rounded-full" :class="apiKeyProofread?'bg-emerald-500':'bg-red-500'"></div>
+      </div>
+
+      <!-- back button -->
+      <button @click="phase=s2Origin"
+              class="flex-none flex items-center gap-1.5 px-2.5 py-1 rounded border
+                     border-zinc-700 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500
+                     transition-colors bg-zinc-900/50">
+        ✕ 退出二审
+      </button>
+    </nav>
+
+    <!-- 3-column body -->
+    <div class="flex flex-1 overflow-hidden">
+
+      <!-- LEFT: current text (30%) -->
+      <div class="flex flex-col border-r border-zinc-800/60" style="width:30%;min-width:180px">
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/40 flex items-center gap-2">
+          <span class="text-xs font-medium text-zinc-500 uppercase tracking-wide">当前文本</span>
+          <span class="text-xs text-zinc-600 truncate">{{ s2CurGroup.heading }}</span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3 space-y-2 tc">
+          <div v-for="(p,i) in s2CurGroup.paragraphs" :key="i"
+               class="rounded-md px-3 py-2"
+               :class="{'para-hd':p.lang==='heading','para-zh':p.lang==='zh','para-en':p.lang==='en'}">
+            <span class="text-[9px] font-mono mr-1 opacity-40"
+                  :class="{'text-violet-400':p.lang==='heading','text-blue-400':p.lang==='zh','text-green-400':p.lang==='en'}">
+              {{ p.lang==='heading'?'H':p.lang==='zh'?'ZH':'EN' }}
+            </span>{{ p.text }}
+          </div>
+        </div>
+      </div>
+
+      <!-- MIDDLE: proofread suggestions (40%) -->
+      <div class="flex flex-col border-r border-zinc-800/60" style="width:40%">
+
+        <!-- status bar -->
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/40 flex items-center gap-2 min-h-[44px]">
+          <template v-if="s2Phase==='streaming'">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <span class="text-xs text-blue-400">二审分析中…</span>
+          </template>
+          <template v-else-if="s2Phase==='done'">
+            <span class="w-1.5 h-1.5 rounded-full flex-none"
+                  :class="s2NoChange?'bg-emerald-400':'bg-violet-400'"></span>
+            <span class="text-xs" :class="s2NoChange?'text-emerald-400':'text-violet-300'">
+              {{ s2NoChange ? '无需修改' : '有修改建议' }}
+            </span>
+          </template>
+          <template v-else-if="s2Phase==='editing'">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400 flex-none"></span>
+            <span class="text-xs text-amber-400">编辑中</span>
+            <span class="text-xs text-zinc-600 ml-1">Ctrl+Enter 保存 · Esc 取消</span>
+          </template>
+          <template v-else>
+            <span class="text-xs text-zinc-600">等待分析…</span>
+          </template>
+        </div>
+
+        <!-- content area -->
+        <div class="flex-1 overflow-y-auto p-3 space-y-3">
+
+          <!-- edit mode -->
+          <textarea v-if="s2Phase==='editing'"
+            v-model="s2EditText"
+            @keydown.ctrl.enter.prevent="s2ConfirmEdit"
+            @keydown.esc.prevent="s2CancelEdit"
+            class="w-full bg-zinc-900 border border-amber-600/50 rounded-md p-3 text-sm text-zinc-200
+                   resize-none focus:outline-none focus:border-amber-500 tc"
+            style="height:100%;min-height:160px"
+          ></textarea>
+
+          <template v-else>
+            <!-- streaming -->
+            <div v-if="s2Phase==='streaming'"
+                 class="tc text-zinc-400 whitespace-pre-wrap cursor-blink text-xs"
+                 v-html="s2StreamHtml"></div>
+
+            <!-- done: no change -->
+            <div v-else-if="s2Phase==='done' && s2NoChange"
+                 class="flex items-center gap-3 p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/40">
+              <span class="text-emerald-400 text-xl flex-none">✓</span>
+              <span class="text-sm text-emerald-300">语言质量、知识准确性与逻辑连贯性均符合要求，无需修改</span>
+            </div>
+
+            <!-- done: has suggestion -->
+            <template v-else-if="s2Phase==='done' && !s2NoChange">
+              <div class="space-y-1.5">
+                <div class="text-[10px] uppercase tracking-wide text-violet-500 font-medium">修改建议</div>
+                <div class="tc text-sm text-zinc-200 whitespace-pre-wrap bg-zinc-900/60 rounded-md p-3
+                             border border-violet-800/30">{{ s2SuggestionText }}</div>
+              </div>
+              <div class="space-y-1.5">
+                <div class="text-[10px] uppercase tracking-wide text-zinc-500 font-medium">修改理由</div>
+                <div class="tc text-xs text-zinc-400 whitespace-pre-wrap bg-zinc-900/40 rounded-md p-3
+                             border border-zinc-800/40">{{ s2ReasonText }}</div>
+              </div>
+            </template>
+          </template>
+        </div>
+
+        <!-- action buttons -->
+        <div class="flex-none border-t border-zinc-800/60 p-2 grid grid-cols-3 gap-1.5">
+          <button @click="s2Adopt"
+                  :disabled="s2Phase!=='done' || s2NoChange"
+                  class="flex flex-col items-center justify-center py-2.5 rounded text-xs font-medium
+                         transition-all gap-0.5 disabled:opacity-25 disabled:cursor-not-allowed
+                         bg-violet-800/50 hover:bg-violet-700/70 border border-violet-700/40 text-violet-300">
+            <span class="text-base leading-none">✅</span>
+            <span>采用建议</span>
+            <span class="text-[10px] opacity-40">Enter</span>
+          </button>
+          <button @click="s2EnterEdit"
+                  :disabled="s2Phase==='streaming'"
+                  class="flex flex-col items-center justify-center py-2.5 rounded text-xs font-medium
+                         transition-all gap-0.5 disabled:opacity-25 disabled:cursor-not-allowed
+                         bg-amber-900/50 hover:bg-amber-800/70 border border-amber-700/40 text-amber-300">
+            <span class="text-base leading-none">✏️</span>
+            <span>编辑修改</span>
+            <span class="text-[10px] opacity-40">E</span>
+          </button>
+          <button @click="s2Ignore"
+                  :disabled="s2Phase==='streaming'"
+                  class="flex flex-col items-center justify-center py-2.5 rounded text-xs font-medium
+                         transition-all gap-0.5 disabled:opacity-25 disabled:cursor-not-allowed
+                         bg-zinc-800/50 hover:bg-zinc-700/70 border border-zinc-700/40 text-zinc-400">
+            <span class="text-base leading-none">⏭️</span>
+            <span>{{ s2NoChange ? '确认跳过' : '忽略建议' }}</span>
+            <span class="text-[10px] opacity-40">S</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- RIGHT: second review history (30%) -->
+      <div class="flex flex-col" style="width:30%">
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/40 flex items-center gap-2">
+          <span class="text-xs font-medium text-zinc-500 uppercase tracking-wide">二审记录</span>
+          <span class="text-xs text-zinc-600">{{ s2History.length }} 条</span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-2 space-y-1">
+          <div v-for="h in s2HistoryRev" :key="h.id"
+               class="rounded px-2.5 py-2 border border-transparent hover:border-zinc-700 hover:bg-zinc-900/40">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[9px] font-mono text-zinc-600 flex-none">#{{ h.id }}</span>
+              <span class="text-xs text-zinc-300 truncate flex-1">{{ h.heading }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full flex-none"
+                    :class="s2BadgeCls(h.decision)">{{ s2DecisionLabel(h.decision) }}</span>
+            </div>
+          </div>
+          <div v-if="!s2History.length" class="text-xs text-zinc-700 text-center pt-8">
+            处理完段落后将在此显示记录
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ══════════════  S2 COMPLETE  ══════════════ -->
+  <div v-else-if="phase==='s2-complete'" class="flex flex-col items-center justify-center flex-1 px-4">
+    <div class="w-full max-w-sm space-y-6 text-center">
+      <div class="text-5xl">🎓</div>
+      <h2 class="text-xl font-semibold text-zinc-100">二审全部完成</h2>
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-violet-400">{{ s2Stats.adopted }}</div>
+          <div class="text-xs text-zinc-500 mt-1">采用建议</div>
+        </div>
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-amber-400">{{ s2Stats.edited }}</div>
+          <div class="text-xs text-zinc-500 mt-1">编辑修改</div>
+        </div>
+        <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+          <div class="text-2xl font-bold text-zinc-400">{{ s2Stats.ignored }}</div>
+          <div class="text-xs text-zinc-500 mt-1">忽略跳过</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button @click="exportDoc(s2ExportResults,'s2_revised.docx','tracked')" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-sm font-medium transition-all
+                       bg-blue-700/60 hover:bg-blue-600/60 border border-blue-600/40 text-blue-200
+                       disabled:opacity-40">
+          <span>📥</span>
+          <span>{{ exporting?'生成中…':'导出审阅版' }}</span>
+          <span class="text-[10px] text-blue-400/60">对照修改痕迹</span>
+        </button>
+        <button @click="exportDoc(s2ExportResults,'s2_clean.docx','clean')" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-sm font-medium transition-all
+                       bg-zinc-800 hover:bg-zinc-700 border border-zinc-600/40 text-zinc-200
+                       disabled:opacity-40">
+          <span>📄</span>
+          <span>{{ exporting?'生成中…':'导出纯净版' }}</span>
+          <span class="text-[10px] text-zinc-500">仅最终内容</span>
+        </button>
+      </div>
+      <div v-if="exportErr" class="text-sm text-red-400">{{ exportErr }}</div>
+    </div>
+  </div>
+
+  <!-- ══════════════  ZERO CLASSIFY (assigning loading screen)  ══════════════ -->
+  <template v-else-if="phase==='zero-classify'">
+    <nav class="flex-none flex items-center gap-2 px-4 h-12 bg-[#0d0e11] border-b border-zinc-800/60">
+      <span class="font-semibold text-zinc-200 text-sm whitespace-nowrap">零审·分配中</span>
+      <span class="text-xs text-zinc-500 truncate max-w-xs">{{ zeroChapterTitle }}</span>
+      <div class="flex-1"></div>
+      <template v-if="!zeroOrganizeErr">
+        <div class="dots flex-none"><span></span><span></span><span></span></div>
+        <span class="text-xs text-zinc-400 flex-none">AI 正在分配段落模块…</span>
+      </template>
+      <span v-else class="text-xs text-red-400 flex-none">分配失败</span>
+      <button @click="phase='upload'"
+              class="flex-none px-2.5 py-1 rounded border border-zinc-700 text-xs text-zinc-400
+                     hover:text-zinc-200 hover:border-zinc-500 transition-colors bg-zinc-900/50">
+        ✕ 退出
+      </button>
+    </nav>
+
+    <div class="flex flex-1 items-center justify-center">
+      <div class="flex flex-col items-center gap-4 text-center max-w-md px-8">
+        <template v-if="!zeroOrganizeErr">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <p class="text-sm text-zinc-300">AI 正在分析段落归属，请稍候</p>
+          <p class="text-xs text-zinc-600">仅发送标题与摘要，AI 输出模块分配映射，原文在本地拼装</p>
+        </template>
+        <div v-if="zeroOrganizeErr"
+             class="px-4 py-3 rounded-lg bg-red-950/40 border border-red-800/40 text-xs text-red-400 text-left w-full max-w-lg">
+          <div class="font-medium mb-1">分配失败</div>
+          <pre class="whitespace-pre-wrap break-all text-red-500/80 max-h-48 overflow-y-auto">{{ zeroOrganizeErr }}</pre>
+          <div class="mt-2 text-zinc-600">详细信息已输出到浏览器控制台（F12）</div>
+          <button @click="retryZeroOrganize"
+                  class="mt-2 block px-3 py-1 rounded border border-red-700/50 text-red-400
+                         hover:border-red-500 hover:text-red-300 transition-colors">
+            重试
+          </button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ══════════════  ZERO ASSEMBLE  ══════════════ -->
+  <template v-else-if="phase==='zero-assemble'">
+    <nav class="flex-none flex items-center gap-2 px-4 h-12 bg-[#0d0e11] border-b border-zinc-800/60">
+      <span class="font-semibold text-zinc-200 text-sm whitespace-nowrap">零审·组装</span>
+      <span class="text-xs text-zinc-500 truncate max-w-xs">{{ zeroChapterTitle }}</span>
+      <div class="flex-1"></div>
+      <div class="flex items-center gap-1.5 flex-none">
+        <span class="text-[10px] text-zinc-600">零审密钥</span>
+        <input v-model="apiKeyZero" @input="saveKeys" type="password" placeholder="sk-..."
+          class="w-32 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
+        <div class="w-1.5 h-1.5 rounded-full" :class="apiKeyZero?'bg-emerald-500':'bg-red-500'"></div>
+      </div>
+      <button @click="zeroExport" :disabled="exporting"
+              class="flex-none px-2.5 py-1 rounded border border-blue-700/50 text-xs text-blue-300
+                     hover:bg-blue-900/30 transition-colors disabled:opacity-40">
+        📥 导出结构版
+      </button>
+      <button @click="phase='zero-classify'"
+              class="flex-none px-2.5 py-1 rounded border border-zinc-700 text-xs text-zinc-400
+                     hover:text-zinc-200 hover:border-zinc-500 transition-colors bg-zinc-900/50">
+        ← 返回分类
+      </button>
+    </nav>
+
+    <div class="flex flex-1 overflow-hidden">
+      <!-- left: five modules editing (55%) -->
+      <div class="flex flex-col border-r border-zinc-800/60" style="width:55%;min-width:0">
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/40">
+          <span class="text-xs font-medium text-zinc-500 uppercase tracking-wide">五模块编辑区</span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3 space-y-3">
+          <div v-for="mod in MODULES" :key="mod" class="space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-medium" :class="zeroModuleTextColor(mod)">▼ {{ mod }}</span>
+              <span v-if="!(zeroAssembled[mod]||'').trim()" class="text-[10px] text-amber-500">⚠️ 内容较少</span>
+              <span v-if="zeroOralInserts[mod]&&zeroOralInserts[mod].length"
+                    class="text-[10px] text-teal-400">· 已纳入 {{ zeroOralInserts[mod].length }} 条</span>
+            </div>
+            <textarea v-model="zeroAssembled[mod]"
+                      :placeholder="mod + ' 内容（从右侧纳入或直接编辑）'"
+                      class="w-full bg-zinc-900/60 border border-zinc-800 rounded-md px-3 py-2.5 text-xs
+                             text-zinc-200 resize-none focus:outline-none focus:border-zinc-700 tc"
+                      style="min-height:100px"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- right: oral library panel (45%) -->
+      <div class="flex flex-col" style="width:45%;min-width:0">
+        <div class="flex-none px-3 py-2 border-b border-zinc-800/40 flex items-center gap-2">
+          <span class="text-xs font-medium text-zinc-500 uppercase tracking-wide">口语参考库</span>
+          <button v-if="oralLibrary.length" @click="triggerOralRecommend" :disabled="zeroRecommending"
+                  class="ml-auto text-[10px] px-2 py-0.5 rounded border border-zinc-700 text-zinc-500
+                         hover:text-zinc-300 transition-colors disabled:opacity-30">
+            {{ zeroRecommending ? '推荐中…' : '重新推荐' }}
+          </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto">
+          <!-- no library -->
+          <div v-if="!oralLibrary.length" class="p-6 text-center text-xs text-zinc-600 space-y-1">
+            <p>未加载口语实例库</p>
+            <p>请返回上传页面加载 JSON 文件</p>
+          </div>
+
+          <template v-else>
+            <div class="p-3 space-y-2">
+              <!-- recommended -->
+              <div class="text-[10px] uppercase tracking-wide text-zinc-600 font-medium flex items-center gap-2">
+                推荐（基于本章主题）
+                <span v-if="zeroRecommending" class="text-zinc-700">推荐中…</span>
+              </div>
+
+              <template v-if="!zeroRecommending">
+                <div v-for="rec in zeroRecommended" :key="rec.topic"
+                     class="rounded-lg border border-zinc-800/60 bg-zinc-900/40 overflow-hidden">
+                  <div class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-zinc-800/40 transition-colors"
+                       @click="toggleOralTopic(rec.topic)">
+                    <span class="text-sm flex-none">{{ rec.relevance==='high' ? '🔥' : '◎' }}</span>
+                    <span class="text-xs font-medium text-zinc-200 flex-1 truncate">{{ rec.topic }}</span>
+                    <span class="text-[10px] text-zinc-500 flex-none max-w-[80px] truncate">{{ rec.reason }}</span>
+                    <span class="text-[10px] text-zinc-600 flex-none">{{ expandedOralTopics[rec.topic] ? '▲' : '▼' }}</span>
+                  </div>
+                  <template v-if="expandedOralTopics[rec.topic] && rec.fullData">
+                    <div class="border-t border-zinc-800/60 px-3 py-2 space-y-2">
+                      <div v-for="(content, sectionType) in rec.fullData.sections" :key="sectionType" class="space-y-0.5">
+                        <div class="flex items-center justify-between">
+                          <span class="text-[10px] text-zinc-500 uppercase tracking-wide">{{ sectionType }}</span>
+                          <button @click="insertOralContent(rec.topic, sectionType, content, '口语实例')"
+                                  class="text-[10px] px-2 py-0.5 rounded bg-teal-900/30 border border-teal-700/30
+                                         text-teal-400 hover:bg-teal-800/40 transition-colors">
+                            + 纳入
+                          </button>
+                        </div>
+                        <div class="text-[10px] text-zinc-600" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">
+                          {{ typeof content==='string' ? content.slice(0,100) : JSON.stringify(content).slice(0,100) }}
+                        </div>
+                      </div>
+                      <button @click="insertAllOralTopic(rec, '口语实例')"
+                              class="w-full py-1.5 text-[10px] rounded bg-teal-900/40 border border-teal-700/40
+                                     text-teal-300 hover:bg-teal-800/50 transition-colors">
+                        + 全部纳入到口语实例模块
+                      </button>
+                    </div>
+                  </template>
+                </div>
+
+                <div v-if="!zeroRecommended.length" class="text-xs text-zinc-700 text-center py-2">
+                  暂无推荐（可检查密钥后重试）
+                </div>
+              </template>
+            </div>
+
+            <!-- all topics -->
+            <div class="px-3 pb-3 border-t border-zinc-800/40 pt-3 space-y-2">
+              <div class="text-[10px] uppercase tracking-wide text-zinc-600 font-medium">全部话题（可搜索）</div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-zinc-600 text-xs">🔍</span>
+                <input v-model="oralSearch" placeholder="搜索话题…"
+                       class="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                              placeholder-zinc-600 focus:outline-none focus:border-zinc-700"/>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <button v-for="item in oralSearchResults.slice(0,40)" :key="item.topic"
+                        @click="toggleOralTopic(item.topic)"
+                        class="text-[10px] px-2 py-0.5 rounded border transition-colors"
+                        :class="expandedOralTopics[item.topic]
+                                ? 'border-teal-700/50 bg-teal-900/30 text-teal-300'
+                                : 'border-zinc-700/50 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300'">
+                  {{ item.topic }}
+                </button>
+              </div>
+              <!-- expanded topics from search (not already in recommended) -->
+              <div v-for="item in oralSearchResults.filter(x => expandedOralTopics[x.topic] && !zeroRecommended.find(r=>r.topic===x.topic))"
+                   :key="item.topic"
+                   class="rounded-lg border border-zinc-800/60 bg-zinc-900/40 overflow-hidden">
+                <div class="flex items-center gap-2 px-3 py-2">
+                  <span class="text-xs font-medium text-zinc-200 flex-1 truncate">{{ item.topic }}</span>
+                  <button @click="toggleOralTopic(item.topic)" class="text-[10px] text-zinc-600 hover:text-zinc-400">▲</button>
+                </div>
+                <div class="border-t border-zinc-800/60 px-3 py-2 space-y-1.5">
+                  <div v-for="(content, sectionType) in item.sections" :key="sectionType"
+                       class="flex items-center justify-between">
+                    <span class="text-[10px] text-zinc-500 uppercase tracking-wide">{{ sectionType }}</span>
+                    <button @click="insertOralContent(item.topic, sectionType, content, '口语实例')"
+                            class="text-[10px] px-2 py-0.5 rounded bg-teal-900/30 border border-teal-700/30
+                                   text-teal-400 hover:bg-teal-800/40 transition-colors">
+                      + 纳入
+                    </button>
+                  </div>
+                  <button @click="insertAllOralTopic({topic:item.topic,fullData:item}, '口语实例')"
+                          class="w-full py-1.5 text-[10px] rounded bg-teal-900/40 border border-teal-700/40
+                                 text-teal-300 hover:bg-teal-800/50 transition-colors mt-1">
+                    + 全部纳入
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ══════════════  ZERO COMPLETE  ══════════════ -->
+  <div v-else-if="phase==='zero-complete'" class="flex flex-col items-center justify-center flex-1 px-4">
+    <div class="w-full max-w-sm space-y-6 text-center">
+      <div class="text-5xl">🗂️</div>
+      <h2 class="text-xl font-semibold text-zinc-100">零审结构整理完成</h2>
+      <div class="grid grid-cols-1 gap-2">
+        <button @click="zeroExport" :disabled="exporting"
+                class="flex flex-col items-center gap-1 py-3 rounded-lg text-sm font-medium transition-all
+                       bg-blue-700/60 hover:bg-blue-600/60 border border-blue-600/40 text-blue-200 disabled:opacity-40">
+          <span>📥</span>
+          <span>{{ exporting ? '生成中…' : '导出结构版 docx' }}</span>
+          <span class="text-[10px] text-blue-400/60">五模块整理结果（纯净版）</span>
+        </button>
+      </div>
+      <button @click="phase='zero-assemble'"
+              class="w-full py-2.5 rounded-lg text-sm text-zinc-400 border border-zinc-700
+                     hover:border-zinc-500 hover:text-zinc-200 transition-colors">
+        ← 返回编辑
+      </button>
       <div v-if="exportErr" class="text-sm text-red-400">{{ exportErr }}</div>
     </div>
   </div>
@@ -629,6 +1178,7 @@ function diffHtml(orig,mod){
 
 // ── Vue ──────────────────────────────────────────────────────────
 const {createApp,ref,computed,onMounted,onUnmounted,nextTick}=Vue
+const MODULES=['理论精讲','谈判技巧','口语实例','核心练习','术语汇总&例句']
 
 const SESSION_KEY='aigc_session'
 
@@ -670,11 +1220,52 @@ createApp({
     // auto mode
     const isAutoMode=ref(false)
     const showAutoWarning=ref(false)
+    // second review
+    const apiKeyProofread=ref('')
+    const s2Groups=ref([])
+    const s2Idx=ref(0)
+    const s2Phase=ref('idle')   // idle | streaming | done | editing
+    const s2StreamedText=ref(''),s2FinalText=ref(''),s2EditText=ref('')
+    const s2NoChange=ref(false)
+    const s2SuggestionText=ref(''),s2ReasonText=ref('')
+    const s2Results=ref([]),s2History=ref([])
+    const s2Origin=ref('complete')
+    let s2Abort=null
+    // zero review
+    const zeroMode=ref(false)
+    const apiKeyZero=ref('')
+    const oralLibrary=ref([])
+    const oralLibraryMeta=ref(null)
+    const zeroGroups=ref([])
+    const zeroChapterTitle=ref('')
+    const zeroOrganizeErr=ref('')
+    const zeroAssembled=ref({})
+    const zeroOralInserts=ref({})
+    const zeroRecommended=ref([])
+    const zeroRecommending=ref(false)
+    const expandedOralTopics=ref({})
+    const oralSearch=ref('')
 
     // ── computed ──
     const curGroup=computed(()=>groups.value[currentIdx.value]||{heading:'',paragraphs:[]})
     const progressPct=computed(()=>groups.value.length?currentIdx.value/groups.value.length*100:0)
     const historyRev=computed(()=>[...history.value].reverse())
+    const s2CurGroup=computed(()=>s2Groups.value[s2Idx.value]||{heading:'',paragraphs:[],currentText:''})
+    const s2ProgressPct=computed(()=>s2Groups.value.length?s2Idx.value/s2Groups.value.length*100:0)
+    const s2HistoryRev=computed(()=>[...s2History.value].reverse())
+    const s2Stats=computed(()=>({
+      adopted:s2Results.value.filter(x=>x._s2decision==='adopted').length,
+      edited: s2Results.value.filter(x=>x._s2decision==='edited').length,
+      ignored:s2Results.value.filter(x=>x._s2decision==='ignored').length,
+    }))
+    const s2ExportResults=computed(()=>s2Results.value.map(({_s2decision,...r})=>r))
+    const s2StreamHtml=computed(()=>esc(s2StreamedText.value).replace(/\n/g,'<br>'))
+
+    const oralSearchResults=computed(()=>{
+      if(!oralSearch.value) return oralLibrary.value
+      const q=oralSearch.value.toLowerCase()
+      return oralLibrary.value.filter(item=>item.topic.toLowerCase().includes(q))
+    })
 
     const rateColor=computed(()=>rateColorOf(aiRate.value||0))
     function rateColorOf(r){
@@ -703,6 +1294,8 @@ createApp({
     function saveKeys(){
       localStorage.setItem('ds_api_key',apiKey.value)
       localStorage.setItem('ds_detect_key',apiKeyDetect.value)
+      localStorage.setItem('ds_proofread_key',apiKeyProofread.value)
+      localStorage.setItem('ds_zero_key',apiKeyZero.value)
     }
     function badgeCls(d){return{approved:'b-ok',edited:'b-ed',skipped:'b-sk',regen:'b-rg'}[d]||'b-sk'}
     function decisionLabel(h){
@@ -711,6 +1304,21 @@ createApp({
       if(h.decision==='skipped')  return '⏭️ 跳过'
       return '🔄 生成'
     }
+    function s2BadgeCls(d){return{adopted:'b-ok',edited:'b-ed',ignored:'b-sk'}[d]||'b-sk'}
+    function s2DecisionLabel(d){
+      if(d==='adopted') return '✅ 采用'
+      if(d==='edited')  return '✏️ 编辑'
+      return '⏭️ 忽略'
+    }
+    function parseProofread(text){
+      if(!text||text.includes('【无需修改】')) return{noChange:true,suggestion:'',reason:''}
+      const sugMatch=text.match(/【修改建议】\n?([\s\S]*?)(?=【修改理由】|$)/)
+      const reasonMatch=text.match(/【修改理由】\n?([\s\S]*)/)
+      const suggestion=sugMatch?sugMatch[1].trim():''
+      if(!suggestion) return{noChange:true,suggestion:'',reason:''}
+      return{noChange:false,suggestion,reason:reasonMatch?reasonMatch[1].trim():''}
+    }
+
     function fmtTime(iso){
       try{
         const d=new Date(iso)
@@ -911,6 +1519,288 @@ createApp({
       }
     }
 
+    // ── second review ──
+    function enterSecondReview(sourceResults){
+      s2Origin.value=phase.value
+      s2Groups.value=sourceResults.map(r=>{
+        const isSkipped=!r.modified||r.decision==='skipped'
+        const currentText=isSkipped
+          ?r.original.map(p=>p.text).join('\n\n')
+          :r.modified
+        const headingPara=r.original.find(p=>p.lang==='heading')
+        const heading=headingPara?.text||r.original[0]?.text||`段落 #${r.id}`
+        // Build paragraphs reflecting current (post-first-review) state
+        let paragraphs
+        if(isSkipped){
+          paragraphs=r.original
+        }else{
+          const lines=r.modified.split('\n').filter(l=>l.trim())
+          const bodyParas=r.original.filter(p=>p.lang!=='heading')
+          const mapped=lines.map((line,i)=>{
+            const orig=bodyParas[i]||bodyParas[bodyParas.length-1]||r.original[r.original.length-1]||{}
+            return{text:line,lang:orig.lang||'zh',style:orig.style||'Normal',fmt:orig.fmt||{}}
+          })
+          paragraphs=headingPara?[headingPara,...mapped]:mapped
+        }
+        return{id:r.id,heading,paragraphs,currentText}
+      })
+      s2Idx.value=0;s2Results.value=[];s2History.value=[]
+      phase.value='second-review'
+      nextTick(()=>startS2Group())
+    }
+
+    function startS2Group(){
+      s2Phase.value='idle'
+      s2StreamedText.value='';s2FinalText.value='';s2EditText.value=''
+      s2NoChange.value=false;s2SuggestionText.value='';s2ReasonText.value=''
+      if(!apiKeyProofread.value){showToast('请先填写二审 API 密钥');return}
+      startProofread()
+    }
+
+    async function startProofread(){
+      const g=s2CurGroup.value
+      if(!g||!g.currentText) return
+      if(!apiKeyProofread.value){showToast('请先填写二审 API 密钥');return}
+      s2StreamedText.value='';s2FinalText.value='';s2Phase.value='streaming'
+      s2Abort=new AbortController()
+      try{
+        const res=await fetch('/proofread',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','X-API-Key-Proofread':apiKeyProofread.value},
+          body:JSON.stringify({text:g.currentText}),
+          signal:s2Abort.signal
+        })
+        if(!res.ok){const d=await res.json();throw new Error(d.error||`HTTP ${res.status}`)}
+        const reader=res.body.getReader(),dec=new TextDecoder();let buf=''
+        while(true){
+          const{done,value}=await reader.read();if(done)break
+          buf+=dec.decode(value,{stream:true})
+          const lines=buf.split('\n');buf=lines.pop()
+          for(const ln of lines){
+            if(!ln.startsWith('data: ')) continue
+            const p=ln.slice(6).trim()
+            if(p==='[DONE]'){buf='';break}
+            try{
+              const c=JSON.parse(p)
+              if(c.error) throw new Error(c.error)
+              if(c.content) s2StreamedText.value+=c.content
+            }catch(pe){if(pe.message&&!pe.message.startsWith('JSON'))throw pe}
+          }
+        }
+        s2FinalText.value=s2StreamedText.value;s2Phase.value='done'
+        const parsed=parseProofread(s2FinalText.value)
+        s2NoChange.value=parsed.noChange
+        s2SuggestionText.value=parsed.suggestion
+        s2ReasonText.value=parsed.reason
+      }catch(e){
+        if(e.name==='AbortError') return
+        s2Phase.value='idle';showToast('二审分析失败：'+e.message)
+      }
+    }
+
+    function s2Adopt(){
+      if(s2Phase.value!=='done'||s2NoChange.value) return
+      commitS2Result('adopted',s2SuggestionText.value)
+    }
+    function s2EnterEdit(){
+      if(s2Phase.value==='streaming') return
+      s2EditText.value=s2SuggestionText.value||s2CurGroup.value.currentText
+      s2Phase.value='editing'
+    }
+    function s2ConfirmEdit(){commitS2Result('edited',s2EditText.value)}
+    function s2CancelEdit(){s2Phase.value=s2FinalText.value?'done':'idle'}
+    function s2Ignore(){
+      if(s2Phase.value==='streaming') return
+      commitS2Result('ignored',s2CurGroup.value.currentText)
+    }
+
+    function commitS2Result(s2decision,finalText){
+      const g=s2CurGroup.value
+      s2History.value.push({id:g.id,heading:g.heading,decision:s2decision})
+      // Map to export-compatible decisions; keep _s2decision for stats
+      const exportDecision=s2decision==='ignored'?'skipped':s2decision==='adopted'?'approved':'edited'
+      s2Results.value.push({
+        _s2decision:s2decision,
+        id:g.id,
+        original:g.paragraphs,
+        modified:s2decision==='ignored'?'':finalText,
+        decision:exportDecision
+      })
+      const next=s2Idx.value+1
+      if(next>=s2Groups.value.length) phase.value='s2-complete'
+      else{s2Idx.value=next;nextTick(()=>startS2Group())}
+    }
+
+    // ── zero review helpers ──
+    function zeroModuleTextColor(mod){
+      return{
+        '理论精讲':'text-blue-400','谈判技巧':'text-violet-400','口语实例':'text-teal-400',
+        '核心练习':'text-amber-400','术语汇总&例句':'text-emerald-400','丢弃':'text-zinc-500'
+      }[mod]||'text-zinc-400'
+    }
+    function toggleOralTopic(topic){
+      const curr={...expandedOralTopics.value}
+      if(curr[topic]) delete curr[topic]
+      else curr[topic]=true
+      expandedOralTopics.value=curr
+    }
+
+    // ── zero review main functions ──
+    async function uploadOralJSON(file){
+      if(!file) return
+      try{
+        const text=await file.text()
+        const data=JSON.parse(text)
+        if(!Array.isArray(data)) throw new Error('格式错误：应为 JSON 数组')
+        oralLibrary.value=data
+        const meta={uploadedAt:new Date().toISOString(),count:data.length,name:file.name}
+        oralLibraryMeta.value=meta
+        localStorage.setItem('oral_library',JSON.stringify(data))
+        localStorage.setItem('oral_library_meta',JSON.stringify(meta))
+        showToast(`口语库已加载：${data.length} 个话题`)
+      }catch(e){ showToast('口语库加载失败：'+e.message) }
+    }
+
+    async function doZeroUpload(file){
+      if(!file) return
+      if(!file.name.endsWith('.docx')){uploadErr.value='请选择 .docx 文件';return}
+      if(!apiKeyZero.value){uploadErr.value='请先填写零审 API 密钥';return}
+      uploadErr.value='';uploading.value=true
+      try{
+        const fd=new FormData();fd.append('file',file)
+        const res=await fetch('/upload',{method:'POST',body:fd})
+        const data=await res.json()
+        if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`)
+        zeroGroups.value=data.groups
+        zeroChapterTitle.value=data.groups[0]?.heading||'未知章节'
+        phase.value='zero-classify'
+        await nextTick()
+        startZeroOrganize()
+      }catch(e){ uploadErr.value=e.message }
+      finally{ uploading.value=false }
+    }
+
+    // Build the compact groups payload: id + heading + first 150 chars of content
+    function _zeroGroupsPayload(){
+      return zeroGroups.value.map(g=>({
+        id: g.id,
+        heading: g.heading||'',
+        preview: (g.combined_text||g.paragraphs.map(p=>p.text).join(' ')).slice(0,60)
+      }))
+    }
+
+    // Assemble module text from groups + assignment map (done client-side)
+    function _assembleFromAssignments(assignments){
+      const assembled={}
+      MODULES.forEach(m=>{assembled[m]=''})
+      zeroGroups.value.forEach(g=>{
+        const mod=assignments[g.id]||assignments[String(g.id)]
+        if(!mod||mod==='丢弃'||!assembled.hasOwnProperty(mod)) return
+        const text=(g.combined_text||g.paragraphs.map(p=>p.text).join('\n')).trim()
+        if(!text) return
+        const heading=g.heading?g.heading+'\n':''
+        assembled[mod]+=(assembled[mod]?'\n\n':'')+heading+text
+      })
+      return assembled
+    }
+
+    async function startZeroOrganize(){
+      zeroOrganizeErr.value=''
+      try{
+        const payload={chapterTitle:zeroChapterTitle.value,groups:_zeroGroupsPayload()}
+        console.log('[zero/organize] sending groups:', payload.groups.length, 'items')
+        const res=await fetch('/zero/organize',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','X-API-Key-Zero':apiKeyZero.value},
+          body:JSON.stringify(payload)
+        })
+        const rawText=await res.text()
+        console.log('[zero/organize] raw response:', rawText.slice(0,500))
+        let data
+        try{ data=JSON.parse(rawText) }
+        catch(e){ throw new Error(`服务器返回非 JSON（HTTP ${res.status}）：${rawText.slice(0,300)}`) }
+        if(!res.ok||data.error) throw new Error(data.error||`HTTP ${res.status}`)
+        const assignments=data.assignments||{}
+        console.log('[zero/organize] assignments:', assignments)
+        const assembled=_assembleFromAssignments(assignments)
+        zeroAssembled.value=assembled
+        const inserts={}
+        MODULES.forEach(m=>{inserts[m]=[]})
+        zeroOralInserts.value=inserts
+        phase.value='zero-assemble'
+        nextTick(()=>triggerOralRecommend())
+      }catch(e){
+        console.error('[zero/organize] error:', e)
+        zeroOrganizeErr.value=e.message
+      }
+    }
+
+    function retryZeroOrganize(){ startZeroOrganize() }
+
+    async function triggerOralRecommend(){
+      if(!oralLibrary.value.length||!apiKeyZero.value) return
+      zeroRecommending.value=true
+      zeroRecommended.value=[]
+      try{
+        const allTopics=oralLibrary.value.map(item=>item.topic)
+        const chapterSummary=(zeroAssembled.value['理论精讲']||'').slice(0,200)
+        const res=await fetch('/zero/recommend-oral',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','X-API-Key-Zero':apiKeyZero.value},
+          body:JSON.stringify({chapterTitle:zeroChapterTitle.value,chapterSummary,allTopics})
+        })
+        const data=await res.json()
+        if(data.error) throw new Error(data.error)
+        zeroRecommended.value=(data.recommended||[]).map(r=>{
+          const full=oralLibrary.value.find(item=>item.topic===r.topic)
+          return{...r,fullData:full||null}
+        }).filter(r=>r.fullData)
+      }catch(e){ showToast('话题推荐失败：'+e.message) }
+      finally{ zeroRecommending.value=false }
+    }
+
+    function insertOralContent(topic,sectionType,content,targetModule){
+      const mod=targetModule||'口语实例'
+      if(!zeroOralInserts.value[mod]) zeroOralInserts.value[mod]=[]
+      const exists=zeroOralInserts.value[mod].find(x=>x.topic===topic&&x.sectionType===sectionType)
+      if(exists){showToast('已纳入过该内容');return}
+      zeroOralInserts.value[mod].push({topic,sectionType,content})
+      const contentStr=typeof content==='string'?content:JSON.stringify(content,null,2)
+      const append=`\n\n--- 纳入：${topic} · ${sectionType} ---\n${contentStr}`
+      zeroAssembled.value[mod]=(zeroAssembled.value[mod]||'')+append
+      showToast(`已纳入：${topic} · ${sectionType}`)
+    }
+
+    function insertAllOralTopic(topicData,targetModule){
+      const mod=targetModule||'口语实例'
+      const sections=topicData.fullData?.sections||{}
+      let count=0
+      Object.entries(sections).forEach(([sectionType,content])=>{
+        const exists=(zeroOralInserts.value[mod]||[]).find(x=>x.topic===topicData.topic&&x.sectionType===sectionType)
+        if(!exists){insertOralContent(topicData.topic,sectionType,content,mod);count++}
+      })
+      if(count===0) showToast('该话题内容已全部纳入')
+    }
+
+    async function zeroExport(){
+      const modules={}
+      MODULES.forEach(m=>{modules[m]=zeroAssembled.value[m]||''})
+      if(!MODULES.some(m=>modules[m].trim())){showToast('没有可导出的内容');return}
+      try{
+        const res=await fetch('/zero/export',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({modules})
+        })
+        if(!res.ok){const d=await res.json();showToast('导出失败：'+(d.error||''));return}
+        const blob=await res.blob()
+        const url=URL.createObjectURL(blob)
+        const a=document.createElement('a')
+        a.href=url;a.download='zero_structured.docx';a.click()
+        URL.revokeObjectURL(url)
+      }catch(e){showToast('导出失败：'+e.message)}
+    }
+
     // ── pause / resume ──
     function pauseReview(){
       isAutoMode.value=false   // always stop auto mode when pausing
@@ -969,15 +1859,24 @@ createApp({
 
     // ── keyboard ──
     function onKey(e){
-      if(phase.value!=='review') return
       const tag=document.activeElement?.tagName?.toLowerCase()
       if(tag==='input'||tag==='textarea') return
-      if(reviewPhase.value==='editing'){if(e.key==='Escape'){e.preventDefault();cancelEdit()};return}
-      switch(e.key){
-        case'Enter':e.preventDefault();approve();break
-        case'r':case'R':e.preventDefault();reviewPhase.value==='idle'?forceReview():regenerate();break
-        case'e':case'E':e.preventDefault();enterEdit();break
-        case's':case'S':e.preventDefault();skip();break
+      if(phase.value==='review'){
+        if(reviewPhase.value==='editing'){if(e.key==='Escape'){e.preventDefault();cancelEdit()};return}
+        switch(e.key){
+          case'Enter':e.preventDefault();approve();break
+          case'r':case'R':e.preventDefault();reviewPhase.value==='idle'?forceReview():regenerate();break
+          case'e':case'E':e.preventDefault();enterEdit();break
+          case's':case'S':e.preventDefault();skip();break
+        }
+      }else if(phase.value==='second-review'){
+        if(s2Phase.value==='editing'){if(e.key==='Escape'){e.preventDefault();s2CancelEdit()};return}
+        if(s2Phase.value!=='done') return
+        switch(e.key){
+          case'Enter':e.preventDefault();s2NoChange.value?s2Ignore():s2Adopt();break
+          case'e':case'E':e.preventDefault();s2EnterEdit();break
+          case's':case'S':e.preventDefault();s2Ignore();break
+        }
       }
     }
 
@@ -988,6 +1887,15 @@ createApp({
     onMounted(()=>{
       apiKey.value=localStorage.getItem('ds_api_key')||''
       apiKeyDetect.value=localStorage.getItem('ds_detect_key')||''
+      apiKeyProofread.value=localStorage.getItem('ds_proofread_key')||''
+      apiKeyZero.value=localStorage.getItem('ds_zero_key')||''
+      // load oral library from localStorage
+      try{
+        const raw=localStorage.getItem('oral_library')
+        if(raw) oralLibrary.value=JSON.parse(raw)
+        const meta=localStorage.getItem('oral_library_meta')
+        if(meta) oralLibraryMeta.value=JSON.parse(meta)
+      }catch{}
       // check for saved session
       const s=loadSession()
       if(s){savedSession.value=s;hasRestoreDialog.value=true}
@@ -1019,6 +1927,27 @@ createApp({
       pauseReview,resumeReview,startFresh,exportPartial,exportDoc,
       restoreSession,dismissRestore,
       stopAutoMode,confirmAutoMode,
+      // second review
+      apiKeyProofread,
+      s2Groups,s2Idx,s2CurGroup,s2ProgressPct,
+      s2Phase,s2StreamedText,s2FinalText,s2EditText,
+      s2NoChange,s2SuggestionText,s2ReasonText,
+      s2Results,s2History,s2HistoryRev,s2Origin,
+      s2Stats,s2ExportResults,s2StreamHtml,
+      s2BadgeCls,s2DecisionLabel,
+      enterSecondReview,s2Adopt,s2EnterEdit,s2ConfirmEdit,s2CancelEdit,s2Ignore,
+      // zero review
+      MODULES,zeroMode,apiKeyZero,
+      oralLibrary,oralLibraryMeta,
+      zeroChapterTitle,zeroOrganizeErr,
+      zeroAssembled,zeroOralInserts,
+      zeroRecommended,zeroRecommending,
+      expandedOralTopics,oralSearch,
+      oralSearchResults,
+      zeroModuleTextColor,toggleOralTopic,
+      uploadOralJSON,doZeroUpload,startZeroOrganize,retryZeroOrganize,
+      triggerOralRecommend,
+      insertOralContent,insertAllOralTopic,zeroExport,
     }
   }
 }).mount('#app')
