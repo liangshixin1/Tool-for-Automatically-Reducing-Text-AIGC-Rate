@@ -877,7 +877,11 @@
   <template v-else-if="phase==='zero-assemble'">
     <nav class="flex-none flex items-center gap-2 px-4 h-12 bg-[#0d0e11] border-b border-zinc-800/60">
       <span class="font-semibold text-zinc-200 text-sm whitespace-nowrap">零审·组装</span>
-      <span class="text-xs text-zinc-500 truncate max-w-xs">{{ zeroChapterTitle }}</span>
+      <span class="text-xs text-zinc-500 truncate max-w-[180px]">{{ zeroChapterTitle }}</span>
+      <span v-if="zeroChapters.length>1"
+            class="flex-none text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">
+        {{ zeroChapterIdx+1 }} / {{ zeroChapters.length }} 章
+      </span>
       <div class="flex-1"></div>
       <div class="flex items-center gap-1.5 flex-none">
         <span class="text-[10px] text-zinc-600">零审密钥</span>
@@ -886,10 +890,17 @@
                  placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
         <div class="w-1.5 h-1.5 rounded-full" :class="apiKeyZero?'bg-emerald-500':'bg-red-500'"></div>
       </div>
+      <!-- Next chapter or finish -->
+      <button v-if="zeroChapterIdx+1 < zeroChapters.length"
+              @click="saveChapterAndNext"
+              class="flex-none px-2.5 py-1 rounded border border-emerald-700/50 text-xs text-emerald-300
+                     hover:bg-emerald-900/20 transition-colors">
+        保存 &amp; 下一章 →
+      </button>
       <button @click="zeroExport" :disabled="exporting"
               class="flex-none px-2.5 py-1 rounded border border-blue-700/50 text-xs text-blue-300
                      hover:bg-blue-900/30 transition-colors disabled:opacity-40">
-        📥 导出结构版
+        📥 导出全文
       </button>
       <button @click="phase='zero-classify'"
               class="flex-none px-2.5 py-1 rounded border border-zinc-700 text-xs text-zinc-400
@@ -1245,6 +1256,10 @@ createApp({
     const zeroRecommending=ref(false)
     const expandedOralTopics=ref({})
     const oralSearch=ref('')
+    // multi-chapter support
+    const zeroChapters=ref([])        // [{title, groups}] — all chapters from upload
+    const zeroChapterIdx=ref(0)       // which chapter is currently being processed
+    const zeroAllAssembled=ref([])    // [{title, modules}] — finalized chapters
 
     // ── computed ──
     const curGroup=computed(()=>groups.value[currentIdx.value]||{heading:'',paragraphs:[]})
@@ -1668,16 +1683,43 @@ createApp({
       uploadErr.value='';uploading.value=true
       try{
         const fd=new FormData();fd.append('file',file)
-        const res=await fetch('/upload',{method:'POST',body:fd})
+        const res=await fetch('/zero/upload',{method:'POST',body:fd})
         const data=await res.json()
         if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`)
-        zeroGroups.value=data.groups
-        zeroChapterTitle.value=data.groups[0]?.heading||'未知章节'
-        phase.value='zero-classify'
-        await nextTick()
-        startZeroOrganize()
+        zeroChapters.value=data.chapters
+        zeroAllAssembled.value=[]
+        zeroChapterIdx.value=0
+        _startZeroChapter(0)
       }catch(e){ uploadErr.value=e.message }
       finally{ uploading.value=false }
+    }
+
+    function _startZeroChapter(idx){
+      const ch=zeroChapters.value[idx]
+      if(!ch) return
+      zeroGroups.value=ch.groups
+      zeroChapterTitle.value=ch.title||`第 ${idx+1} 章`
+      zeroOrganizeErr.value=''
+      zeroAssembled.value={}
+      zeroOralInserts.value={}
+      MODULES.forEach(m=>{zeroAssembled.value[m]='';zeroOralInserts.value[m]=[]})
+      phase.value='zero-classify'
+      nextTick(()=>startZeroOrganize())
+    }
+
+    function saveChapterAndNext(){
+      // Save current chapter's assembled modules
+      zeroAllAssembled.value.push({
+        title: zeroChapterTitle.value,
+        modules: {...zeroAssembled.value}
+      })
+      const next=zeroChapterIdx.value+1
+      if(next<zeroChapters.value.length){
+        zeroChapterIdx.value=next
+        _startZeroChapter(next)
+      }else{
+        phase.value='zero-complete'
+      }
     }
 
     // Build the compact groups payload: id + heading + first 150 chars of content
@@ -1696,10 +1738,10 @@ createApp({
       zeroGroups.value.forEach(g=>{
         const mod=assignments[g.id]||assignments[String(g.id)]
         if(!mod||mod==='丢弃'||!assembled.hasOwnProperty(mod)) return
+        // combined_text already starts with the heading line — do NOT prepend heading again
         const text=(g.combined_text||g.paragraphs.map(p=>p.text).join('\n')).trim()
         if(!text) return
-        const heading=g.heading?g.heading+'\n':''
-        assembled[mod]+=(assembled[mod]?'\n\n':'')+heading+text
+        assembled[mod]+=(assembled[mod]?'\n\n':'')+text
       })
       return assembled
     }
@@ -1708,29 +1750,48 @@ createApp({
       zeroOrganizeErr.value=''
       try{
         const payload={chapterTitle:zeroChapterTitle.value,groups:_zeroGroupsPayload()}
-        console.log('[zero/organize] sending groups:', payload.groups.length, 'items')
         const res=await fetch('/zero/organize',{
           method:'POST',
           headers:{'Content-Type':'application/json','X-API-Key-Zero':apiKeyZero.value},
           body:JSON.stringify(payload)
         })
-        const rawText=await res.text()
-        console.log('[zero/organize] raw response:', rawText.slice(0,500))
-        let data
-        try{ data=JSON.parse(rawText) }
-        catch(e){ throw new Error(`服务器返回非 JSON（HTTP ${res.status}）：${rawText.slice(0,300)}`) }
-        if(!res.ok||data.error) throw new Error(data.error||`HTTP ${res.status}`)
-        const assignments=data.assignments||{}
-        console.log('[zero/organize] assignments:', assignments)
-        const assembled=_assembleFromAssignments(assignments)
-        zeroAssembled.value=assembled
-        const inserts={}
-        MODULES.forEach(m=>{inserts[m]=[]})
-        zeroOralInserts.value=inserts
-        phase.value='zero-assemble'
-        nextTick(()=>triggerOralRecommend())
+        if(!res.ok){const t=await res.text();throw new Error(`HTTP ${res.status}: ${t.slice(0,200)}`)}
+        const reader=res.body.getReader()
+        const decoder=new TextDecoder()
+        let buf=''
+        outer: while(true){
+          const{done,value}=await reader.read()
+          if(done) break
+          buf+=decoder.decode(value,{stream:true})
+          let sep
+          while((sep=buf.indexOf('\n\n'))!==-1){
+            const block=buf.slice(0,sep)
+            buf=buf.slice(sep+2)
+            for(const rawLine of block.split('\n')){
+              const line=rawLine.replace(/\r$/,'')
+              if(!line.startsWith('data:')) continue
+              const payload=line.replace(/^data:\s*/,'')
+              if(!payload) continue
+              let msg
+              try{ msg=JSON.parse(payload) }catch(e){ continue }
+              if(msg.type==='ping'||msg.type==='progress') continue
+              if(msg.type==='error') throw new Error(msg.msg||'未知错误')
+              if(msg.type==='done'){
+                const assignments=msg.assignments||{}
+                const assembled=_assembleFromAssignments(assignments)
+                zeroAssembled.value=assembled
+                const inserts={}
+                MODULES.forEach(m=>{inserts[m]=[]})
+                zeroOralInserts.value=inserts
+                phase.value='zero-assemble'
+                nextTick(()=>triggerOralRecommend())
+                break outer
+              }
+            }
+          }
+        }
       }catch(e){
-        console.error('[zero/organize] error:', e)
+        console.error('[zero/organize]',e)
         zeroOrganizeErr.value=e.message
       }
     }
@@ -1783,14 +1844,17 @@ createApp({
     }
 
     async function zeroExport(){
-      const modules={}
-      MODULES.forEach(m=>{modules[m]=zeroAssembled.value[m]||''})
-      if(!MODULES.some(m=>modules[m].trim())){showToast('没有可导出的内容');return}
+      // Combine all saved chapters + current chapter (if assembled)
+      const allChapters=[...zeroAllAssembled.value]
+      if(MODULES.some(m=>(zeroAssembled.value[m]||'').trim())){
+        allChapters.push({title:zeroChapterTitle.value, modules:{...zeroAssembled.value}})
+      }
+      if(!allChapters.length){showToast('没有可导出的内容');return}
       try{
         const res=await fetch('/zero/export',{
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({modules})
+          body:JSON.stringify({chapters:allChapters})
         })
         if(!res.ok){const d=await res.json();showToast('导出失败：'+(d.error||''));return}
         const blob=await res.blob()
@@ -1939,6 +2003,7 @@ createApp({
       // zero review
       MODULES,zeroMode,apiKeyZero,
       oralLibrary,oralLibraryMeta,
+      zeroChapters,zeroChapterIdx,zeroAllAssembled,
       zeroChapterTitle,zeroOrganizeErr,
       zeroAssembled,zeroOralInserts,
       zeroRecommended,zeroRecommending,
@@ -1946,6 +2011,7 @@ createApp({
       oralSearchResults,
       zeroModuleTextColor,toggleOralTopic,
       uploadOralJSON,doZeroUpload,startZeroOrganize,retryZeroOrganize,
+      saveChapterAndNext,
       triggerOralRecommend,
       insertOralContent,insertAllOralTopic,zeroExport,
     }

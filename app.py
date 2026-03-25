@@ -145,6 +145,89 @@ def is_numbered_heading(text: str) -> bool:
     return bool(re.match(r"^\d+(\.\d+)*\.?\s+\S", text.strip()))
 
 
+def _style_depth(para) -> int:
+    """Return heading depth from Word style (1/2/3) or 0 if not a heading."""
+    s = para.style.name.lower()
+    for depth in (1, 2, 3):
+        if f"heading {depth}" in s or f"标题 {depth}" in s or f"标题{depth}" in s:
+            return depth
+    return 0
+
+
+def parse_chapters(file_obj) -> list[dict]:
+    """
+    Split a docx into chapters at Heading-1 boundaries.
+    Returns [{title, groups}] where groups are the same dicts as parse_docx.
+    """
+    from docx import Document as _Doc
+    doc = _Doc(file_obj)
+
+    chapters: list[dict] = []
+    current_chapter: dict | None = None
+    current_group: dict | None = None
+    gid = 0
+
+    def _flush_group():
+        nonlocal current_group
+        if current_group and current_group["paragraphs"]:
+            current_chapter["groups"].append(current_group)
+        current_group = None
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+
+        depth = _style_depth(para)
+        fmt = _fmt_from_para(para)
+
+        if depth == 1:
+            # Chapter boundary — save previous chapter & group
+            _flush_group()
+            if current_chapter and current_chapter["groups"]:
+                chapters.append(current_chapter)
+            current_chapter = {"title": text, "groups": []}
+            # The chapter title itself becomes the first (header-only) group
+            gid += 1
+            current_group = {
+                "id": gid, "heading": text, "paragraphs": [],
+                "combined_text": "",
+            }
+
+        elif depth in (2, 3) or is_numbered_heading(text):
+            _flush_group()
+            if current_chapter is None:
+                current_chapter = {"title": text, "groups": []}
+            gid += 1
+            current_group = {
+                "id": gid, "heading": text,
+                "paragraphs": [{"text": text, "lang": "heading",
+                                 "style": para.style.name, "fmt": fmt}],
+                "combined_text": text,
+            }
+        else:
+            if current_chapter is None:
+                current_chapter = {"title": "(前言)", "groups": []}
+            if current_group is None:
+                gid += 1
+                current_group = {
+                    "id": gid, "heading": "(前言)", "paragraphs": [],
+                    "combined_text": "",
+                }
+            lang = detect_lang(text)
+            current_group["paragraphs"].append(
+                {"text": text, "lang": lang, "style": para.style.name, "fmt": fmt}
+            )
+            sep = "\n\n" if current_group["combined_text"] else ""
+            current_group["combined_text"] += sep + text
+
+    _flush_group()
+    if current_chapter and current_chapter["groups"]:
+        chapters.append(current_chapter)
+
+    return chapters
+
+
 # ─── formatting helpers ──────────────────────────────────────────────────────
 
 def _pt_or_none(length_obj):
@@ -811,6 +894,22 @@ ZERO_RECOMMEND_PROMPT = """你是外贸教材编辑助手。根据当前章节�
 最多返回6条。"""
 
 
+@app.route("/zero/upload", methods=["POST"])
+def zero_upload():
+    if "file" not in request.files:
+        return jsonify({"error": "未找到上传文件"}), 400
+    f = request.files["file"]
+    if not f.filename or not f.filename.endswith(".docx"):
+        return jsonify({"error": "请上传 .docx 格式的文件"}), 400
+    try:
+        chapters = parse_chapters(f)
+        if not chapters:
+            return jsonify({"error": "未找到任何章节（需要 Word 标题样式 Heading 1/2/3 或编号标题）"}), 400
+        return jsonify({"chapters": chapters, "total": len(chapters)})
+    except Exception as exc:
+        return jsonify({"error": f"文件解析失败：{exc}"}), 500
+
+
 @app.route("/zero/classify", methods=["POST"])
 def zero_classify():
     data = request.get_json(silent=True) or {}
@@ -931,7 +1030,7 @@ ZERO_ASSIGN_PROMPT = """你是外贸谈判教材的专业编辑。请根据章�
 def zero_organize():
     data = request.get_json(silent=True) or {}
     chapter_title = data.get("chapterTitle", "")
-    groups = data.get("groups", [])   # [{id, heading, preview}]
+    groups = data.get("groups", [])
     api_key = request.headers.get("X-API-Key-Zero", "").strip()
 
     if not api_key:
@@ -941,41 +1040,67 @@ def zero_organize():
 
     lines = [f"章节：{chapter_title}", ""]
     for g in groups:
-        lines.append(f"[{g['id']}] 标题：{g.get('heading','')}")
-        if g.get("preview"):
-            lines.append(f"    内容：{g['preview']}")
+        gid = g.get("id", "")
+        heading = g.get("heading", "").replace("\n", " ").strip()
+        preview = g.get("preview", "").replace("\n", " ").strip()
+        lines.append(f"[{gid}] {heading}")
+        if preview and preview != heading:
+            lines.append(f"    {preview[:60]}")
     user_content = "\n".join(lines)
 
-    try:
-        resp = requests.post(
-            DEEPSEEK_API_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": ZERO_ASSIGN_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                "temperature": 0.1,
-                "stream": False,
-                "max_tokens": 4096,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        result = json.loads(content)
-        return jsonify(result)
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "分配请求超时（120s）"}), 504
-    except (KeyError, ValueError, json.JSONDecodeError) as exc:
-        return jsonify({"error": f"结果解析失败：{exc}"}), 500
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+    def generate():
+        full = ""
+        try:
+            yield "data: {\"type\":\"progress\",\"msg\":\"正在分析段落结构…\"}\n\n"
+            resp = requests.post(
+                DEEPSEEK_API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": ZERO_ASSIGN_PROMPT},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0.1,
+                    "stream": True,
+                    "max_tokens": 4096,
+                },
+                stream=True,
+                timeout=60,
+            )
+            resp.raise_for_status()
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        full += delta
+                        yield "data: {\"type\":\"ping\"}\n\n"
+                except (KeyError, json.JSONDecodeError):
+                    pass
+            result = json.loads(full)
+            yield f"data: {json.dumps({'type':'done','assignments':result.get('assignments',{})}, ensure_ascii=False)}\n\n"
+        except json.JSONDecodeError as exc:
+            yield f"data: {json.dumps({'type':'error','msg':f'JSON 解析失败：{exc} | 原文：{full[:200]}'})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'type':'error','msg':str(exc)})}\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/zero/export", methods=["POST"])
@@ -986,7 +1111,12 @@ def zero_export():
     from docx.oxml import OxmlElement
 
     data = request.get_json(silent=True) or {}
-    modules: dict = data.get("modules", {})
+    # Support both single-chapter {modules, chapterTitle} and multi-chapter {chapters}
+    raw_chapters = data.get("chapters")
+    if not raw_chapters:
+        single_modules = data.get("modules", {})
+        single_title   = (data.get("chapterTitle") or "").strip()
+        raw_chapters = [{"title": single_title, "modules": single_modules}]
 
     MODULES_ORDER = ["理论精讲", "谈判技巧", "口语实例", "核心练习", "术语汇总&例句"]
 
@@ -1018,62 +1148,73 @@ def zero_export():
             pass
         return run
 
-    # Sub-heading: lines starting with "1.1", "1.1.1 xxx", "第X节/章/条", short enough
+    # H3 detection: numbered section headings at any depth, or 第X节/章
     subhead_re = re.compile(
-        r'^(\d+(\.\d+)+[\s\u3000\u4e00-\u9fff]'
-        r'|第[一二三四五六七八九十百\d]+[章节条部篇]\s*)'
+        r'^(\d+(\.\d+)*\.?\s+\S'
+        r'|第[一二三四五六七八九十百\d]+[章节条部篇])'
     )
 
-    first = True
-    for module in MODULES_ORDER:
-        text = (modules.get(module) or "").strip()
-        if not text:
+    has_content = False
+
+    for ch in raw_chapters:
+        ch_title  = (ch.get("title") or "").strip()
+        ch_modules = ch.get("modules") or {}
+        if not any((ch_modules.get(m) or "").strip() for m in MODULES_ORDER):
             continue
 
-        if not first:
-            sep = doc.add_paragraph()
-            sep.paragraph_format.space_before = Pt(0)
-            sep.paragraph_format.space_after  = Pt(0)
-        first = False
+        has_content = True
 
-        # H1 — module name
-        h1 = doc.add_paragraph()
-        try:
-            h1.style = doc.styles["Heading 1"]
-        except Exception:
-            pass
-        h1.paragraph_format.space_before = Pt(18)
-        h1.paragraph_format.space_after  = Pt(9)
-        _run(h1, module, bold=True, size_pt=16, ascii_font="Arial", ea_font="黑体")
+        # H1 — chapter title
+        if ch_title:
+            h1 = doc.add_paragraph()
+            try:
+                h1.style = doc.styles["Heading 1"]
+            except Exception:
+                pass
+            h1.paragraph_format.space_before = Pt(24)
+            h1.paragraph_format.space_after  = Pt(12)
+            _run(h1, ch_title, bold=True, size_pt=18, ascii_font="Arial", ea_font="黑体")
 
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
+        for module in MODULES_ORDER:
+            text = (ch_modules.get(module) or "").strip()
+            if not text:
                 continue
 
-            is_subhead = bool(subhead_re.match(line)) and len(line) < 80
+            # H2 — module name
+            h2 = doc.add_paragraph()
+            try:
+                h2.style = doc.styles["Heading 2"]
+            except Exception:
+                pass
+            h2.paragraph_format.space_before = Pt(18)
+            h2.paragraph_format.space_after  = Pt(6)
+            _run(h2, module, bold=True, size_pt=14, ascii_font="Arial", ea_font="黑体")
 
-            if is_subhead:
-                h2 = doc.add_paragraph()
-                try:
-                    h2.style = doc.styles["Heading 2"]
-                except Exception:
-                    pass
-                h2.paragraph_format.space_before = Pt(12)
-                h2.paragraph_format.space_after  = Pt(4)
-                _run(h2, line, bold=True, size_pt=13, ascii_font="Arial", ea_font="黑体")
-            else:
-                body = doc.add_paragraph()
-                try:
-                    body.style = doc.styles["Normal"]
-                except Exception:
-                    pass
-                body.paragraph_format.space_before       = Pt(0)
-                body.paragraph_format.space_after        = Pt(4)
-                body.paragraph_format.first_line_indent  = Pt(0)
-                _run(body, line, size_pt=11)
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if bool(subhead_re.match(line)) and len(line) < 100:
+                    h3 = doc.add_paragraph()
+                    try:
+                        h3.style = doc.styles["Heading 3"]
+                    except Exception:
+                        pass
+                    h3.paragraph_format.space_before = Pt(10)
+                    h3.paragraph_format.space_after  = Pt(3)
+                    _run(h3, line, bold=True, size_pt=12, ascii_font="Arial", ea_font="黑体")
+                else:
+                    body = doc.add_paragraph()
+                    try:
+                        body.style = doc.styles["Normal"]
+                    except Exception:
+                        pass
+                    body.paragraph_format.space_before      = Pt(0)
+                    body.paragraph_format.space_after       = Pt(4)
+                    body.paragraph_format.first_line_indent = Pt(0)
+                    _run(body, line, size_pt=11)
 
-    if first:
+    if not has_content:
         return jsonify({"error": "没有可导出的内容"}), 400
 
     buf = io.BytesIO()
