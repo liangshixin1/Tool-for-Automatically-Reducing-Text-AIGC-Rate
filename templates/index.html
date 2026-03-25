@@ -100,23 +100,31 @@
     </div>
 
     <!-- mode toggle -->
-    <div class="w-full max-w-md mb-2">
-      <div class="flex rounded-lg bg-zinc-900 border border-zinc-800 p-0.5">
-        <button @click="zeroMode=false"
-                class="flex-1 py-1.5 text-xs rounded-md font-medium transition-colors"
-                :class="!zeroMode ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'">
-          一审（AIGC降率）
+    <div class="w-full max-w-md mb-5">
+      <div class="flex rounded-lg bg-zinc-900 border border-zinc-800 p-1 gap-1">
+        <button @click="zeroMode=false;s2UploadMode=false"
+                class="flex-1 py-2.5 text-xs rounded-md font-medium transition-colors leading-tight"
+                :class="!zeroMode&&!s2UploadMode ? 'bg-zinc-700 text-zinc-100 shadow-sm' : 'text-zinc-500 hover:text-zinc-300'">
+          <div>一审</div>
+          <div class="text-[10px] font-normal mt-0.5" :class="!zeroMode&&!s2UploadMode?'opacity-60':'opacity-40'">AIGC降率</div>
         </button>
-        <button @click="zeroMode=true"
-                class="flex-1 py-1.5 text-xs rounded-md font-medium transition-colors"
-                :class="zeroMode ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'">
-          零审（结构整理）
+        <button @click="zeroMode=false;s2UploadMode=true"
+                class="flex-1 py-2.5 text-xs rounded-md font-medium transition-colors leading-tight"
+                :class="s2UploadMode ? 'bg-violet-900 text-violet-100 shadow-sm' : 'text-zinc-500 hover:text-zinc-300'">
+          <div>二审</div>
+          <div class="text-[10px] font-normal mt-0.5" :class="s2UploadMode?'opacity-60':'opacity-40'">质量校验</div>
+        </button>
+        <button @click="zeroMode=true;s2UploadMode=false"
+                class="flex-1 py-2.5 text-xs rounded-md font-medium transition-colors leading-tight"
+                :class="zeroMode ? 'bg-zinc-700 text-zinc-100 shadow-sm' : 'text-zinc-500 hover:text-zinc-300'">
+          <div>零审</div>
+          <div class="text-[10px] font-normal mt-0.5" :class="zeroMode?'opacity-60':'opacity-40'">结构整理</div>
         </button>
       </div>
     </div>
 
     <!-- ── 一审模式 ── -->
-    <div v-if="!zeroMode" class="w-full max-w-md space-y-7">
+    <div v-if="!zeroMode && !s2UploadMode" class="w-full max-w-md space-y-7">
 
       <div class="text-center">
         <div class="text-xs tracking-widest text-zinc-500 uppercase mb-1">AIGC Trace Eliminator</div>
@@ -164,6 +172,48 @@
           <div class="text-4xl mb-3">📄</div>
           <p class="text-zinc-300 font-medium">拖拽 .docx 至此，或点击选择</p>
           <p class="text-xs text-zinc-600 mt-1">仅支持 Word 2007+ (.docx)，最大 50 MB</p>
+        </div>
+        <div v-else class="flex flex-col items-center gap-3">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <p class="text-sm text-zinc-400">正在解析文档…</p>
+        </div>
+      </div>
+
+      <div v-if="uploadErr"
+           class="bg-red-950/60 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
+        {{ uploadErr }}
+      </div>
+    </div>
+
+    <!-- ── 二审模式 ── -->
+    <div v-else-if="s2UploadMode" class="w-full max-w-md space-y-5">
+
+      <div class="text-center">
+        <div class="text-xs tracking-widest text-zinc-500 uppercase mb-1">Second Review</div>
+        <h1 class="text-2xl font-semibold text-zinc-100">二审·质量校验</h1>
+        <p class="text-sm text-zinc-500 mt-1">上传 .docx，对语言质量、知识准确性与逻辑连贯性进行深度校验</p>
+      </div>
+
+      <!-- proofread key -->
+      <div class="space-y-1">
+        <label class="text-xs text-zinc-400 uppercase tracking-wide">二审 API 密钥</label>
+        <input v-model="apiKeyProofread" @input="saveKeys" type="password" placeholder="sk-..."
+          class="w-full bg-zinc-900 border border-zinc-700 rounded-md px-3 py-2 text-sm text-zinc-200
+                 placeholder-zinc-600 focus:outline-none focus:border-zinc-500"/>
+      </div>
+
+      <!-- drop zone for second review -->
+      <div class="drop-zone rounded-xl p-10 text-center cursor-pointer"
+           :class="{over:dragOver}"
+           @dragover.prevent="dragOver=true" @dragleave.prevent="dragOver=false"
+           @drop.prevent="e => { dragOver=false; const f=e.dataTransfer?.files?.[0]; if(f) doSecondReviewUpload(f) }"
+           @click="$refs.s2Fi.click()">
+        <input ref="s2Fi" type="file" accept=".docx" class="hidden"
+               @change="e => { doSecondReviewUpload(e.target.files[0]); e.target.value='' }"/>
+        <div v-if="!uploading">
+          <div class="text-4xl mb-3">🔍</div>
+          <p class="text-zinc-300 font-medium">拖拽 .docx 至此，或点击选择</p>
+          <p class="text-xs text-zinc-600 mt-1">上传后直接进入二审流程</p>
         </div>
         <div v-else class="flex flex-col items-center gap-3">
           <div class="dots"><span></span><span></span><span></span></div>
@@ -281,22 +331,26 @@
         ⏸ 暂停
       </button>
       <!-- auto-save timestamp -->
-      <span v-if="sessionSavedAt" class="text-[10px] text-zinc-700 flex-none whitespace-nowrap">
+      <span v-if="sessionSavedAt" class="text-xs text-zinc-600 flex-none whitespace-nowrap">
         ✓ {{ sessionSavedAt }}
       </span>
 
       <!-- compact API keys -->
-      <div class="flex items-center gap-1.5 flex-none">
-        <span class="text-[10px] text-zinc-600">审校</span>
-        <input v-model="apiKey" @input="saveKeys" type="password" placeholder="sk-..."
-          class="w-32 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
-                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
-        <div class="w-1.5 h-1.5 rounded-full" :class="apiKey?'bg-emerald-500':'bg-red-500'"></div>
-        <span class="text-[10px] text-zinc-600 ml-1">检测</span>
-        <input v-model="apiKeyDetect" @input="saveKeys" type="password" placeholder="sk-..."
-          class="w-32 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
-                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
-        <div class="w-1.5 h-1.5 rounded-full" :class="apiKeyDetect?'bg-emerald-500':'bg-zinc-600'"></div>
+      <div class="flex items-center gap-2 flex-none">
+        <div class="flex items-center gap-1">
+          <span class="text-xs text-zinc-500">审校</span>
+          <input v-model="apiKey" @input="saveKeys" type="password" placeholder="sk-..."
+            class="w-36 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                   placeholder-zinc-600 focus:outline-none focus:border-zinc-600"/>
+          <div class="w-2 h-2 rounded-full flex-none" :class="apiKey?'bg-emerald-500':'bg-red-500'"></div>
+        </div>
+        <div class="flex items-center gap-1">
+          <span class="text-xs text-zinc-500">检测</span>
+          <input v-model="apiKeyDetect" @input="saveKeys" type="password" placeholder="sk-... （选填）"
+            class="w-36 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                   placeholder-zinc-600 focus:outline-none focus:border-zinc-600"/>
+          <div class="w-2 h-2 rounded-full flex-none" :class="apiKeyDetect?'bg-emerald-500':'bg-zinc-600'"></div>
+        </div>
       </div>
     </nav>
 
@@ -631,11 +685,11 @@
 
       <!-- compact proofread key -->
       <div class="flex items-center gap-1.5 flex-none">
-        <span class="text-[10px] text-zinc-600">二审密钥</span>
+        <span class="text-xs text-zinc-500">二审密钥</span>
         <input v-model="apiKeyProofread" @input="saveKeys" type="password" placeholder="sk-..."
-          class="w-32 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
-                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
-        <div class="w-1.5 h-1.5 rounded-full" :class="apiKeyProofread?'bg-emerald-500':'bg-red-500'"></div>
+          class="w-36 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                 placeholder-zinc-600 focus:outline-none focus:border-zinc-600"/>
+        <div class="w-2 h-2 rounded-full flex-none" :class="apiKeyProofread?'bg-emerald-500':'bg-red-500'"></div>
       </div>
 
       <!-- back button -->
@@ -884,11 +938,11 @@
       </span>
       <div class="flex-1"></div>
       <div class="flex items-center gap-1.5 flex-none">
-        <span class="text-[10px] text-zinc-600">零审密钥</span>
+        <span class="text-xs text-zinc-500">零审密钥</span>
         <input v-model="apiKeyZero" @input="saveKeys" type="password" placeholder="sk-..."
-          class="w-32 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
-                 placeholder-zinc-700 focus:outline-none focus:border-zinc-600"/>
-        <div class="w-1.5 h-1.5 rounded-full" :class="apiKeyZero?'bg-emerald-500':'bg-red-500'"></div>
+          class="w-36 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300
+                 placeholder-zinc-600 focus:outline-none focus:border-zinc-600"/>
+        <div class="w-2 h-2 rounded-full flex-none" :class="apiKeyZero?'bg-emerald-500':'bg-red-500'"></div>
       </div>
       <!-- Next chapter or finish -->
       <button v-if="zeroChapterIdx+1 < zeroChapters.length"
@@ -1242,8 +1296,9 @@ createApp({
     const s2Results=ref([]),s2History=ref([])
     const s2Origin=ref('complete')
     let s2Abort=null
-    // zero review
+    // zero review / upload mode
     const zeroMode=ref(false)
+    const s2UploadMode=ref(false)
     const apiKeyZero=ref('')
     const oralLibrary=ref([])
     const oralLibraryMeta=ref(null)
@@ -1694,6 +1749,23 @@ createApp({
       finally{ uploading.value=false }
     }
 
+    async function doSecondReviewUpload(file){
+      if(!file) return
+      if(!file.name.endsWith('.docx')){uploadErr.value='请选择 .docx 文件';return}
+      uploadErr.value='';uploading.value=true
+      try{
+        const fd=new FormData();fd.append('file',file)
+        const res=await fetch('/upload',{method:'POST',body:fd})
+        const data=await res.json()
+        if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`)
+        const syntheticResults=data.groups.map(g=>({
+          id:g.id,original:g.paragraphs,modified:'',decision:'skipped'
+        }))
+        enterSecondReview(syntheticResults)
+      }catch(e){ uploadErr.value=e.message }
+      finally{ uploading.value=false }
+    }
+
     function _startZeroChapter(idx){
       const ch=zeroChapters.value[idx]
       if(!ch) return
@@ -2001,7 +2073,7 @@ createApp({
       s2BadgeCls,s2DecisionLabel,
       enterSecondReview,s2Adopt,s2EnterEdit,s2ConfirmEdit,s2CancelEdit,s2Ignore,
       // zero review
-      MODULES,zeroMode,apiKeyZero,
+      MODULES,zeroMode,s2UploadMode,apiKeyZero,
       oralLibrary,oralLibraryMeta,
       zeroChapters,zeroChapterIdx,zeroAllAssembled,
       zeroChapterTitle,zeroOrganizeErr,
@@ -2010,7 +2082,7 @@ createApp({
       expandedOralTopics,oralSearch,
       oralSearchResults,
       zeroModuleTextColor,toggleOralTopic,
-      uploadOralJSON,doZeroUpload,startZeroOrganize,retryZeroOrganize,
+      uploadOralJSON,doZeroUpload,doSecondReviewUpload,startZeroOrganize,retryZeroOrganize,
       saveChapterAndNext,
       triggerOralRecommend,
       insertOralContent,insertAllOralTopic,zeroExport,
